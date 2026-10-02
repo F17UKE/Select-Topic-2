@@ -1,0 +1,33 @@
+{
+  "name": "@select-topic-2/backend",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "node --watch src/server.cjs",
+    "start": "node src/server.cjs",
+    "test": "node --test --test-concurrency=1 test/*.test.cjs",
+    "db:check": "node scripts/check-db.cjs",
+    "db:migrate": "knex --knexfile knexfile.cjs migrate:latest",
+    "db:status": "knex --knexfile knexfile.cjs migrate:list",
+    "db:seed": "knex --knexfile knexfile.cjs seed:run",
+    "db:verify-local": "node scripts/verify-local-db.cjs",
+    "db:rollback": "knex --knexfile knexfile.cjs migrate:rollback",
+    "checkslip:manual": "node scripts/manual-checkslip.cjs",
+    "storage:test-object": "node scripts/test-object-storage.cjs"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1145.0",
+    "@smithy/node-http-handler": "^4.12.1",
+    "bcryptjs": "^3.0.3",
+    "dotenv": "18.0.5",
+    "express": "5.2.1",
+    "knex": "3.3.0",
+    "multer": "^2.4.0",
+    "pg": "8.23.1",
+    "promptpay-qr": "^0.5.0",
+    "qrcode": "^1.5.4"
+  },
+  "devDependencies": {
+    "supertest": "7.3.0"
+  }
+}

@@ -1,0 +1,21 @@
+name: select-topic-2-local
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${LOCAL_DB_NAME:?Set LOCAL_DB_NAME in deploy/local/.env}
+      POSTGRES_USER: ${LOCAL_DB_USER:?Set LOCAL_DB_USER in deploy/local/.env}
+      POSTGRES_PASSWORD: ${LOCAL_DB_PASSWORD:?Set LOCAL_DB_PASSWORD in deploy/local/.env}
+    ports:
+      - "127.0.0.1:${LOCAL_DB_PORT:-55432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:

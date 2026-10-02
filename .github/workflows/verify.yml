@@ -1,0 +1,33 @@
+name: Bootstrap verification
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run verify
+        env:
+          NEXT_TELEMETRY_DISABLED: '1'
+          NODE_OPTIONS: --max-old-space-size=640
+      - run: npm run test:smoke
+      - name: Shell syntax and ShellCheck
+        run: |
+          for file in deploy/scripts/*.sh; do bash -n "$file"; done
+          shellcheck -x -P deploy/scripts deploy/scripts/*.sh
+      - name: Validate Nginx configuration without deployment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nginx
+          printf 'pid /tmp/select-topic-2-nginx.pid;\nevents {}\nhttp { include %s/deploy/nginx/select-topic-2.conf; }\n' "$GITHUB_WORKSPACE" > /tmp/select-topic-2-nginx.conf
+          sudo nginx -t -c /tmp/select-topic-2-nginx.conf
