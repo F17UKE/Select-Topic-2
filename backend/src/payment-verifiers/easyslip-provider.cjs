@@ -6,6 +6,7 @@ const maximumResponseBytes = 512 * 1024;
 
 // Only known separators are canonicalized. Masked/other characters never become digits.
 const accountDigits = (value) => typeof value === 'string' && /^[\d -]+$/.test(value) ? value.replace(/[ -]/g, '') : null;
+const visibleSuffixDigits = (value) => typeof value === 'string' ? value.trim().match(/(\d{1,20})$/)?.[1] || null : null;
 const imageRejections = new Set(['SLIP_NOT_FOUND', 'INVALID_IMAGE_FORMAT', 'INVALID_IMAGE_TYPE', 'IMAGE_SIZE_TOO_LARGE']);
 const providerErrors = new Set([
   'SLIP_PENDING', 'MISSING_API_KEY', 'INVALID_API_KEY', 'BRANCH_INACTIVE', 'SERVICE_BANNED', 'USER_BANNED',
@@ -51,17 +52,27 @@ function parseResult(payload, input, mapping, requestId) {
   const rawBank = raw.receiver?.account?.bank;
   const rawBankDigits = accountDigits(rawBank?.account);
   const rawBankCode = raw.receiver?.bank?.id;
+  const rawProxy = raw.receiver?.account?.proxy;
+  const promptPayDigits = accountDigits(mapping.promptpayId);
   // matchedAccount is the exact branch account returned because matchAccount=true. The raw slip
-  // may expose a PromptPay proxy, token, or masked representation. Only a canonical BANKAC value
-  // is an independent bank-account assertion that must agree with the immutable mapping.
-  const matchedAccountMatches = account?.bank?.code === mapping.bankCode
+  // may identify either the underlying registered bank account or the exact PromptPay identifier.
+  const directBankMatch = account?.bank?.code === mapping.bankCode
     && accountDigits(account?.bankNumber) === mapping.bankNumber;
+  const promptPayMatch = mapping.promptpayType === 'PHONE'
+    && account?.bank?.code === 'PROMPTPAY'
+    && accountDigits(account?.bankNumber) === promptPayDigits;
+  const matchedAccountMatches = directBankMatch || promptPayMatch;
+  // Only a canonical BANKAC value is an independent bank-account assertion. PromptPay proxies
+  // may be masked, but an exposed type or suffix must not contradict the immutable mapping.
   const rawHasCanonicalBankAccount = rawBank?.type === 'BANKAC'
     && Boolean(rawBankDigits)
     && /^\d{3}$/.test(String(rawBankCode || ''));
   const rawBankConsistent = !rawHasCanonicalBankAccount
     || (rawBankCode === mapping.bankCode && rawBankDigits === mapping.bankNumber);
-  const recipientMatches = matchedAccountMatches && rawBankConsistent;
+  const rawProxySuffix = visibleSuffixDigits(rawProxy?.account);
+  const rawProxyConsistent = !rawProxy || mapping.promptpayType !== 'PHONE'
+    || (rawProxy.type === 'MSISDN' && (!rawProxySuffix || promptPayDigits?.endsWith(rawProxySuffix)));
+  const recipientMatches = matchedAccountMatches && rawBankConsistent && rawProxyConsistent;
   const failureCode = !amountMatches ? 'AMOUNT_MISMATCH' : !recipientMatches ? 'RECIPIENT_MISMATCH' : null;
   return {
     provider: 'easyslip-v2', providerRequestId: requestId,
@@ -73,6 +84,7 @@ function parseResult(payload, input, mapping, requestId) {
     rawRedacted: { provider: 'easyslip-v2', http_status: 200, duplicate: data.isDuplicate,
       amount_matches: amountMatches, recipient_matches: Boolean(recipientMatches),
       matched_account_compared: true, raw_receiver_account_compared: rawHasCanonicalBankAccount,
+      raw_receiver_proxy_compared: Boolean(rawProxy),
       verification_stage: failureCode === 'AMOUNT_MISMATCH' ? 'AMOUNT' : failureCode === 'RECIPIENT_MISMATCH' ? 'RECIPIENT' : 'FINALIZE',
       reference_digest: crypto.createHash('sha256').update(reference).digest('hex'), failure_code: failureCode },
   };

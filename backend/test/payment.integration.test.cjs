@@ -338,9 +338,9 @@ test('PromptPay payment pipeline: ownership, QR, upload validation, verification
         if (calls === 1) throw new Error('synthetic transport loss');
         return { statusCode: 200, body: JSON.stringify({ success: true, data: {
           isDuplicate: true, isAmountMatched: true, amountInOrder: order.total_amount, amountInSlip: order.total_amount,
-          matchedAccount: { bank: { code: '999' }, bankNumber: '0000000099' },
+          matchedAccount: { bank: { code: 'PROMPTPAY' }, bankNumber: '0800000099' },
           rawSlip: { date: '2026-10-01T00:00:00Z', transRef: reference, amount: { amount: order.total_amount },
-            receiver: { bank: { id: '014' }, account: { bank: { type: 'TOKEN', account: 'xxxxxx0099' } } } },
+            receiver: { bank: { id: 'PROMPTPAY' }, account: { proxy: { type: 'MSISDN', account: '******0099' } } } },
         } }) };
       } });
       const client = await login(appFor(db, 'U_LOCAL_CUSTOMER_001', storageRoot, { config, verifier }));

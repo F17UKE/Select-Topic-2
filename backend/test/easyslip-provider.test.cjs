@@ -17,6 +17,16 @@ const success = () => ({ success: true, data: { isDuplicate: false, isAmountMatc
   rawSlip: { transRef: 'SYNTHETIC-001', date: '2026-10-01T00:00:00Z', amount: { amount: 435 },
     receiver: { bank: { id: '999' }, account: { bank: { type: 'BANKAC', account: '0000000099' } } } } } });
 const adapter = (payload, override = {}) => createEasyslipProvider(config, { request: async () => ({ statusCode: 200, body: JSON.stringify(payload), ...override }) });
+const platformInput = { ...input, expectedRecipient: '0800001822' };
+const platformMapping = { promptpayType: 'PHONE', promptpayId: platformInput.expectedRecipient, bankCode: '004', bankNumber: '0000004110' };
+const platformConfig = { ...config, easyslipMerchantAccounts: { 99: platformMapping } };
+const platformSuccess = () => ({ success: true, data: { isDuplicate: false, isAmountMatched: true,
+  amountInOrder: 435, amountInSlip: 435, matchedAccount: { bank: { code: 'PROMPTPAY' }, bankNumber: platformMapping.promptpayId },
+  rawSlip: { transRef: 'SYNTHETIC-PROMPTPAY-001', date: '2026-10-01T00:00:00Z', amount: { amount: 435 },
+    receiver: { bank: { id: 'PROMPTPAY' }, account: { proxy: { type: 'MSISDN', account: '******1822' } } } } } });
+const platformAdapter = (payload) => createEasyslipProvider(platformConfig, {
+  request: async () => ({ statusCode: 200, body: JSON.stringify(payload) }),
+});
 
 test('EasySlip strict parser accepts only exact merchant account and exact authoritative satang', async () => {
   const result = await adapter(success()).verify(input);
@@ -65,6 +75,38 @@ test('EasySlip accepts a PromptPay proxy receiver when matchedAccount is exact',
   assert.equal(result.status, 'VERIFIED');
   assert.equal(result.recipientVerified, true);
   assert.equal(result.rawRedacted.raw_receiver_account_compared, false);
+});
+test('EasySlip accepts exact PROMPTPAY PHONE matchedAccount with a masked MSISDN proxy', async () => {
+  const result = await platformAdapter(platformSuccess()).verify(platformInput);
+  assert.equal(result.status, 'VERIFIED');
+  assert.equal(result.recipientVerified, true);
+  assert.equal(result.rawRedacted.raw_receiver_account_compared, false);
+  assert.equal(result.rawRedacted.raw_receiver_proxy_compared, true);
+});
+for (const [name, change, failureCode] of [
+  ['different PROMPTPAY matchedAccount number', (p) => { p.data.matchedAccount.bankNumber = '0800009999'; }, 'RECIPIENT_MISMATCH'],
+  ['conflicting visible proxy suffix', (p) => { p.data.rawSlip.receiver.account.proxy.account = '******9999'; }, 'RECIPIENT_MISMATCH'],
+  ['wrong PHONE proxy type', (p) => { p.data.rawSlip.receiver.account.proxy.type = 'NATID'; }, 'RECIPIENT_MISMATCH'],
+  ['wrong amount', (p) => { p.data.amountInSlip = 434; }, 'AMOUNT_MISMATCH'],
+]) test(`EasySlip rejects ${name} for a PromptPay matchedAccount`, async () => {
+  const payload = platformSuccess(); change(payload);
+  const result = await platformAdapter(payload).verify(platformInput);
+  assert.equal(result.status, 'REJECTED');
+  assert.equal(result.failureCode, failureCode);
+});
+test('EasySlip still accepts the exact underlying bank account form', async () => {
+  const payload = platformSuccess();
+  payload.data.matchedAccount = { bank: { code: '004' }, bankNumber: platformMapping.bankNumber };
+  payload.data.rawSlip.receiver = { bank: { id: '004' }, account: { bank: { type: 'BANKAC', account: platformMapping.bankNumber } } };
+  assert.equal((await platformAdapter(payload).verify(platformInput)).status, 'VERIFIED');
+});
+test('EasySlip rejects a wrong underlying direct bank match', async () => {
+  const payload = platformSuccess();
+  payload.data.matchedAccount = { bank: { code: '014' }, bankNumber: platformMapping.bankNumber };
+  delete payload.data.rawSlip.receiver.account.proxy;
+  const result = await platformAdapter(payload).verify(platformInput);
+  assert.equal(result.status, 'REJECTED');
+  assert.equal(result.failureCode, 'RECIPIENT_MISMATCH');
 });
 for (const [name, change] of [
   ['empty ref', (p) => { p.data.rawSlip.transRef = ''; }],
