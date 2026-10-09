@@ -17,9 +17,12 @@ const { createIdempotencyStore } = require('../src/idempotency.cjs');
 const { createLocalSlipStorage } = require('../src/slip-storage.cjs');
 const { createPaymentVerifier } = require('../src/payment-verifier.cjs');
 const { createPaymentService } = require('../src/payment-service.cjs');
+const { createFinanceService } = require('../src/finance-service.cjs');
 
 const localDatabase = ['127.0.0.1', 'localhost', '::1'].includes(process.env.DB_HOST)
   && process.env.DB_NAME === 'select_topic_2_local';
+const isolatedLocalDatabase = localDatabase
+  && /^-c search_path=p0_test_[a-f0-9]{16}$/.test(process.env.PGOPTIONS || '');
 const png = (label) => Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), Buffer.from(label)]);
 
 function appFor(db, lineUserId, storageRoot, dependencies = {}) {
@@ -51,7 +54,7 @@ async function login(app) {
 }
 
 test('PromptPay payment pipeline: ownership, QR, upload validation, verification and duplicate safety', {
-  skip: !localDatabase && 'requires select_topic_2_local on loopback',
+  skip: !isolatedLocalDatabase && 'requires disposable select_topic_2_local schema',
 }, async (t) => {
   const db = createDatabase(process.env, { required: true });
   const storageRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'select-topic-2-slips-'));
@@ -315,7 +318,13 @@ test('PromptPay payment pipeline: ownership, QR, upload validation, verification
       }
     });
 
-    await t.test('EasySlip duplicate is accepted only for a proven same-payment reconciliation', async () => {
+    const financeOwner = await db('platform_admins').where({ role: 'SUPER_ADMIN', is_active: true }).whereNull('deleted_at').first();
+    await createFinanceService(db).configure(financeOwner, {
+      mode: 'PLATFORM_CENTRALIZED', confirm: true, promptpayType: 'PHONE', promptpayId: '0800000099',
+      displayName: 'Synthetic payment integration', bankCode: '999', bankNumber: '0000000099',
+    });
+
+    await t.test('EasySlip duplicate is accepted only for the same stored payment reconciliation', async () => {
       const { createEasyslipProvider } = require('../src/payment-verifiers/easyslip-provider.cjs');
       const config = { verificationMode: 'easyslip', maxUploadBytes: 4194304, retentionHours: 24,
         easyslipApiBaseUrl: 'https://api.easyslip.com/v2', easyslipApiKey: 'synthetic-only',
@@ -331,7 +340,7 @@ test('PromptPay payment pipeline: ownership, QR, upload validation, verification
           isDuplicate: true, isAmountMatched: true, amountInOrder: order.total_amount, amountInSlip: order.total_amount,
           matchedAccount: { bank: { code: '999' }, bankNumber: '0000000099' },
           rawSlip: { date: '2026-10-01T00:00:00Z', transRef: reference, amount: { amount: order.total_amount },
-            receiver: { bank: { id: '999' }, account: { bank: { account: '0000000099' } } } },
+            receiver: { bank: { id: '014' }, account: { bank: { type: 'TOKEN', account: 'xxxxxx0099' } } } },
         } }) };
       } });
       const client = await login(appFor(db, 'U_LOCAL_CUSTOMER_001', storageRoot, { config, verifier }));
@@ -339,21 +348,71 @@ test('PromptPay payment pipeline: ownership, QR, upload validation, verification
       const failed = await client.post(`/api/orders/${order.id}/payment/slip`)
         .attach('slip', png('easy-own-retry'), { filename: 'slip.png', contentType: 'image/png' }).expect(200);
       assert.equal(failed.body.payment.verification_status, 'ERROR');
-      await db('payment_verifications').where({ payment_id: payment.id }).update({
-        provider_transaction_reference: reference, amount_matches: true, recipient_matches: true, failure_code: null,
-      });
       assert.equal((await client.post(`/api/orders/${order.id}/payments`).send({}).expect(201)).body.payment.id, payment.id);
       const reconciled = await client.post(`/api/orders/${order.id}/payment/reconcile`).send({}).expect(200);
       assert.equal(reconciled.body.payment.status, 'PAID');
       assert.equal(calls, 2);
+      assert.equal(Number((await db('payments').where({ order_id: order.id, status: 'PAID' }).count('* as n').first()).n), 1);
+      assert.equal(Number((await db('financial_transactions').where({ event_key: `ORDER_PAID:${order.id}` }).count('* as n').first()).n), 1);
+      const replay = await client.post(`/api/orders/${order.id}/payment/reconcile`).send({}).expect(200);
+      assert.equal(replay.body.payment.status, 'PAID');
+      assert.equal(calls, 2, 'paid reconciliation replay must not call EasySlip again');
+      assert.equal(Number((await db('financial_transactions').where({ event_key: `ORDER_PAID:${order.id}` }).count('* as n').first()).n), 1);
+    });
+
+    await t.test('a legacy newer empty attempt cannot hide the same order stored-slip recovery', async () => {
+      const order = await createOrder();
+      const reference = `EASY-STORED-${order.id}`;
+      let calls = 0;
+      const verifier = {
+        name: 'easyslip-v2',
+        preflight() {},
+        async verify(input) {
+          calls++;
+          const recipientVerified = calls > 1;
+          return {
+            provider: 'easyslip-v2', providerRequestId: `stored-${calls}`,
+            status: recipientVerified ? 'VERIFIED' : 'REJECTED',
+            failureCode: recipientVerified ? null : 'RECIPIENT_MISMATCH',
+            transactionReference: reference, amount: input.expectedAmount,
+            providerDuplicate: recipientVerified,
+            recipient: { type: input.expectedRecipientType, value: input.expectedRecipient },
+            recipientVerified, merchantId: input.merchantId,
+            rawRedacted: { amount_matches: true, recipient_matches: recipientVerified },
+          };
+        },
+      };
+      const client = await login(appFor(db, 'U_LOCAL_CUSTOMER_001', storageRoot, { verifier }));
+      const original = (await client.post(`/api/orders/${order.id}/payments`).send({}).expect(201)).body.payment;
+      const rejected = await client.post(`/api/orders/${order.id}/payment/slip`)
+        .attach('slip', png('legacy-stored-slip'), { filename: 'slip.png', contentType: 'image/png' }).expect(200);
+      assert.equal(rejected.body.payment.verification.failure_code, 'RECIPIENT_MISMATCH');
+      const pinned = await db('payments').where({ id: original.id }).first('payment_recipient_version_id', 'expected_amount');
+      const [emptyAttempt] = await db('payments').insert({
+        order_id: order.id, payment_recipient_version_id: pinned.payment_recipient_version_id,
+        method: 'PROMPTPAY', status: 'PENDING', verification_status: 'PENDING',
+        expected_amount: pinned.expected_amount, provider: verifier.name,
+      }).returning('id');
+      assert.notEqual(emptyAttempt.id, original.id);
+      assert.equal((await client.get(`/api/orders/${order.id}/payment`).expect(200)).body.payment.id, original.id);
+      assert.equal((await client.post(`/api/orders/${order.id}/payments`).send({}).expect(201)).body.payment.id, original.id);
+      const reconciled = await client.post(`/api/orders/${order.id}/payment/reconcile`).send({}).expect(200);
+      assert.equal(reconciled.body.payment.id, original.id);
+      assert.equal(reconciled.body.payment.status, 'PAID');
+      assert.equal(calls, 2);
+      assert.equal(Number((await db('payment_slips').where({ payment_id: original.id }).count('* as n').first()).n), 1);
+      assert.equal(Number((await db('payments').where({ order_id: order.id, status: 'PAID' }).count('* as n').first()).n), 1);
+      assert.equal(Number((await db('financial_transactions').where({ event_key: `ORDER_PAID:${order.id}` }).count('* as n').first()).n), 1);
     });
   } finally {
-    if (originalFinanceRuntime) {
+    // The suite now exercises immutable centralized finance history. Its disposable schema is
+    // dropped by isolated-local-verification; deleting journal rows would correctly be rejected.
+    if (!isolatedLocalDatabase && originalFinanceRuntime) {
       await db('system_settings').where({ setting_key: 'finance.runtime' }).update({
         setting_value: JSON.stringify(originalFinanceRuntime.setting_value), updated_at: db.fn.now(),
       });
     }
-    if (orderIds.length) {
+    if (!isolatedLocalDatabase && orderIds.length) {
       await db('notification_outbox').whereIn('order_id', orderIds).delete();
       await db('customer_notifications').whereIn('order_id', orderIds).delete();
       const paymentIds = (await db('payments').whereIn('order_id', orderIds).select('id')).map((row) => row.id);
@@ -367,10 +426,10 @@ test('PromptPay payment pipeline: ownership, QR, upload validation, verification
       await db('order_items').whereIn('order_id', orderIds).delete();
       await db('orders').whereIn('id', orderIds).delete();
     }
-    if (merchantId && baselineCounter !== undefined) {
+    if (!isolatedLocalDatabase && merchantId && baselineCounter !== undefined) {
       await db('merchants').where({ id: merchantId }).update({ last_order_number: baselineCounter });
     }
-    if (secondCustomerId) await db('customers').where({ id: secondCustomerId }).delete();
+    if (!isolatedLocalDatabase && secondCustomerId) await db('customers').where({ id: secondCustomerId }).delete();
     await db.destroy();
     await fs.rm(storageRoot, { recursive: true, force: true });
   }

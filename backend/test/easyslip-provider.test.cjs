@@ -15,7 +15,7 @@ const config = { easyslipApiBaseUrl: 'https://api.easyslip.com/v2', easyslipApiK
 const success = () => ({ success: true, data: { isDuplicate: false, isAmountMatched: true,
   amountInOrder: 435, amountInSlip: 435, matchedAccount: { bank: { code: '999' }, bankNumber: '0000000099' },
   rawSlip: { transRef: 'SYNTHETIC-001', date: '2026-10-01T00:00:00Z', amount: { amount: 435 },
-    receiver: { bank: { id: '999' }, account: { bank: { account: '0000000099' } } } } } });
+    receiver: { bank: { id: '999' }, account: { bank: { type: 'BANKAC', account: '0000000099' } } } } } });
 const adapter = (payload, override = {}) => createEasyslipProvider(config, { request: async () => ({ statusCode: 200, body: JSON.stringify(payload), ...override }) });
 
 test('EasySlip strict parser accepts only exact merchant account and exact authoritative satang', async () => {
@@ -31,6 +31,7 @@ for (const [name, change, code] of [
   ['amount mismatch', (p) => { p.data.amountInSlip = 434.99; }, 'AMOUNT_MISMATCH'],
   ['raw amount mismatch', (p) => { p.data.rawSlip.amount.amount = 434; }, 'AMOUNT_MISMATCH'],
   ['wrong request correlation', (p) => { p.data.amountInOrder = 1; }, 'AMOUNT_MISMATCH'],
+  ['other registered bank', (p) => { p.data.matchedAccount.bank.code = '004'; }, 'RECIPIENT_MISMATCH'],
   ['other registered account', (p) => { p.data.matchedAccount.bankNumber = '0000000088'; }, 'RECIPIENT_MISMATCH'],
   ['raw receiver wrong', (p) => { p.data.rawSlip.receiver.account.bank.account = '0000000088'; }, 'RECIPIENT_MISMATCH'],
   ['missing account', (p) => { p.data.matchedAccount = null; }, 'RECIPIENT_MISMATCH'],
@@ -49,10 +50,20 @@ test('EasySlip surfaces provider duplicate only after full amount/recipient vali
 });
 for (const [name, rawAccount] of [['masked', 'xxxxxx0099'], ['absent', undefined]]) test(`EasySlip accepts ${name} raw receiver when matchedAccount is exact`, async () => {
   const payload = success();
+  payload.data.rawSlip.receiver.account.bank.type = 'TOKEN';
   if (rawAccount === undefined) delete payload.data.rawSlip.receiver.account.bank.account;
   else payload.data.rawSlip.receiver.account.bank.account = rawAccount;
   const result = await adapter(payload).verify(input);
   assert.equal(result.status, 'VERIFIED');
+  assert.equal(result.rawRedacted.raw_receiver_account_compared, false);
+});
+test('EasySlip accepts a PromptPay proxy receiver when matchedAccount is exact', async () => {
+  const payload = success();
+  payload.data.rawSlip.receiver.bank.id = '014';
+  payload.data.rawSlip.receiver.account.bank = { type: 'TOKEN', account: 'xxxxxx1822' };
+  const result = await adapter(payload).verify(input);
+  assert.equal(result.status, 'VERIFIED');
+  assert.equal(result.recipientVerified, true);
   assert.equal(result.rawRedacted.raw_receiver_account_compared, false);
 });
 for (const [name, change] of [

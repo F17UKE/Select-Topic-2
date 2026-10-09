@@ -9,8 +9,40 @@ const { satang } = require('./payment-money.cjs');
 const { createFinanceService } = require('./finance-service.cjs');
 
 const activeStatuses = ['PENDING', 'SUBMITTED', 'PROCESSING'];
+const recoverableRejectedCodes = new Set(['RECIPIENT_MISMATCH', 'PROVIDER_DUPLICATE_REQUIRES_REVIEW']);
 const moneyNumber = (value) => value === null || value === undefined ? null : Number(value);
 const toCents = satang;
+
+function providerMetadata(verification) {
+  if (!verification?.provider_response) return {};
+  try {
+    return typeof verification.provider_response === 'string'
+      ? JSON.parse(verification.provider_response) : verification.provider_response;
+  } catch { return {}; }
+}
+
+function rejectedRecoveryAllowed(verification) {
+  return verification?.status === 'REJECTED'
+    && verification.provider === 'easyslip-v2'
+    && recoverableRejectedCodes.has(verification.failure_code)
+    && providerMetadata(verification).reconciliation !== true;
+}
+
+function canReconcilePayment(payment, slip, verification) {
+  if (!slip || payment.status === 'PAID') return false;
+  const staged = verification?.status === 'PROCESSING'
+    && Boolean(verification.provider_transaction_reference)
+    && verification.reported_amount !== null
+    && verification.reported_amount !== undefined
+    && verification.amount_matches === true
+    && verification.recipient_matches === true
+    && !verification.failure_code;
+  const inProgress = payment.status === 'PROCESSING'
+    || payment.verification_status === 'PROCESSING'
+    || verification?.status === 'PROCESSING';
+  const retryable = verification?.status === 'ERROR' || payment.verification_status === 'ERROR';
+  return staged || inProgress || retryable || rejectedRecoveryAllowed(verification);
+}
 
 function recipientTypeMatches(actual, expected) {
   if (!actual) return true;
@@ -52,20 +84,10 @@ function serializePayment(payment, slip, verification) {
       };
     } catch { /* Corrupt diagnostics are never exposed. */ }
   }
-  const providerResultStaged = verification?.status === 'PROCESSING'
-    && Boolean(verification.provider_transaction_reference)
-    && verification.reported_amount !== null
-    && verification.reported_amount !== undefined
-    && verification.amount_matches === true
-    && verification.recipient_matches === true
-    && !verification.failure_code;
   const providerInProgress = payment.status === 'PROCESSING'
     || payment.verification_status === 'PROCESSING'
     || verification?.status === 'PROCESSING';
-  const providerRetryable = verification?.status === 'ERROR'
-    || payment.verification_status === 'ERROR';
-  const reconciliationAvailable = Boolean(slip) && payment.status !== 'PAID'
-    && (providerResultStaged || providerInProgress || providerRetryable);
+  const reconciliationAvailable = canReconcilePayment(payment, slip, verification);
   return {
     id: payment.id, order_id: payment.order_id, method: payment.method,
     status: payment.status, verification_status: payment.verification_status,
@@ -89,6 +111,28 @@ function serializePayment(payment, slip, verification) {
 
 function createPaymentService({ db, storage, verifier, config, notifier }) {
   const finance = createFinanceService(db);
+
+  async function recoverableRejectedPayment(query, orderId, { lock = false } = {}) {
+    let builder = query('payments').where({ order_id: orderId }).whereNot({ status: 'PAID' }).orderBy('id', 'desc');
+    if (lock) builder = builder.forUpdate();
+    const payments = await builder;
+    for (const payment of payments) {
+      const [slip, verification] = await Promise.all([
+        query('payment_slips').where({ payment_id: payment.id }).whereNull('deleted_at').first(),
+        query('payment_verifications').where({ payment_id: payment.id }).orderBy('id', 'desc').first(),
+      ]);
+      if (slip && rejectedRecoveryAllowed(verification)) return { payment, slip, verification };
+    }
+    return null;
+  }
+
+  async function referenceOwnedByAnotherPayment(query, reference, paymentId) {
+    if (!reference) return null;
+    const payment = await query('payments').where({ transaction_reference: reference }).whereNot({ id: paymentId }).first('id');
+    if (payment) return payment;
+    return query('payment_verifications').where({ provider_transaction_reference: reference })
+      .whereNot({ payment_id: paymentId }).first('payment_id as id');
+  }
   async function ownedOrder(query, customerId, orderId, { lock = false } = {}) {
     if (lock) {
       const owner = await query('orders').where({ id: orderId, customer_id: customerId }).first('merchant_id');
@@ -128,6 +172,8 @@ function createPaymentService({ db, storage, verifier, config, notifier }) {
       if (existing?.status === 'PAID') return existing.id;
       if (order.payment_status === 'PAID') throw new HttpError(409, 'order_already_paid');
       if (['CANCELLED', 'REJECTED', 'COMPLETED'].includes(order.order_status)) throw new HttpError(409, 'order_not_payable');
+      const rejectedRecovery = await recoverableRejectedPayment(trx, order.id, { lock: true });
+      if (rejectedRecovery) return rejectedRecovery.payment.id;
       // A transport error may retry the SAME stored image without releasing its unique hash.
       if (existing?.status === 'FAILED' && existing.verification_status === 'ERROR') {
         await trx('payments').where({ id: existing.id }).update({ status: 'PENDING', verification_status: 'PENDING', updated_at: trx.fn.now() });
@@ -154,14 +200,18 @@ function createPaymentService({ db, storage, verifier, config, notifier }) {
 
   async function getPayment(customerId, orderId, expectedPaymentId) {
     await ownedOrder(db, customerId, orderId);
-    const payment = expectedPaymentId
+    let payment = expectedPaymentId
       ? await db('payments').where({ id: expectedPaymentId, order_id: orderId }).first()
       : await latestPayment(db, orderId);
     if (!payment) throw new HttpError(404, 'payment_not_found');
-    const [slip, verification] = await Promise.all([
+    let [slip, verification] = await Promise.all([
       db('payment_slips').where({ payment_id: payment.id }).whereNull('deleted_at').first(),
       db('payment_verifications').where({ payment_id: payment.id }).orderBy('id', 'desc').first(),
     ]);
+    if (!expectedPaymentId && payment.status !== 'PAID' && !canReconcilePayment(payment, slip, verification)) {
+      const rejectedRecovery = await recoverableRejectedPayment(db, orderId);
+      if (rejectedRecovery) ({ payment, slip, verification } = rejectedRecovery);
+    }
     return {
       payment: serializePayment(payment, slip, verification),
       verification_mode: config.verificationMode === 'mock' ? 'mock' : undefined,
@@ -278,20 +328,12 @@ function createPaymentService({ db, storage, verifier, config, notifier }) {
       const verification = await trx('payment_verifications').where({ id: verificationId, payment_id: payment.id }).forUpdate().first();
       if (!verification) throw new HttpError(404, 'payment_verification_not_found');
       const evaluated = evaluateProviderResult(order, payment, result);
-      const duplicate = evaluated.reference
-        ? await trx('payments').where({ transaction_reference: evaluated.reference }).whereNot({ id: payment.id }).first('id')
-        : null;
-      const priorSamePayment = result.providerDuplicate === true && evaluated.reference
-        ? await trx('payment_verifications').where({ payment_id: payment.id })
-          .whereNot({ id: verification.id }).where({
-            provider_transaction_reference: evaluated.reference,
-            amount_matches: true,
-            recipient_matches: true,
-          }).whereNull('failure_code').first('id')
-        : null;
-      if (!evaluated.failureCode && (duplicate || (result.providerDuplicate === true && !priorSamePayment))) {
-        evaluated.failureCode = result.providerDuplicate === true && reconciliation
-          ? 'PROVIDER_DUPLICATE_REQUIRES_REVIEW' : 'DUPLICATE_TRANSACTION_REFERENCE';
+      const duplicate = await referenceOwnedByAnotherPayment(trx, evaluated.reference, payment.id);
+      // A provider duplicate is safe only while re-verifying this payment's immutable stored slip.
+      // The current response must still pass reference, amount, and recipient validation, and no
+      // other payment may own the reference. A first upload never receives this exception.
+      if (!evaluated.failureCode && (duplicate || (result.providerDuplicate === true && !reconciliation))) {
+        evaluated.failureCode = 'DUPLICATE_TRANSACTION_REFERENCE';
         evaluated.verificationStage = 'DUPLICATE';
       }
       const now = trx.fn.now();
@@ -305,6 +347,7 @@ function createPaymentService({ db, storage, verifier, config, notifier }) {
         recipient_matches: evaluated.recipientMatches,
         provider_response: JSON.stringify({
           ...result.rawRedacted,
+          reconciliation: reconciliation === true,
           verification_stage: evaluated.verificationStage,
           failure_code: evaluated.failureCode,
           finalization_pending: !evaluated.failureCode,
@@ -351,7 +394,7 @@ function createPaymentService({ db, storage, verifier, config, notifier }) {
         const amountMatches = verification.amount_matches === true
           && toCents(verification.reported_amount) === toCents(payment.expected_amount);
         const recipientMatches = verification.recipient_matches === true;
-        const duplicate = reference ? await trx('payments').where({ transaction_reference: reference }).whereNot({ id: payment.id }).first('id') : null;
+        const duplicate = await referenceOwnedByAnotherPayment(trx, reference, payment.id);
         let failureCode = verification.status !== 'PROCESSING' || verification.failure_code ? 'PAYMENT_RECONCILIATION_INVALID' : null;
         if (!failureCode && !/^[A-Za-z0-9_.:-]{1,255}$/.test(reference)) failureCode = 'MISSING_TRANSACTION_REFERENCE';
         else if (!failureCode && ['CANCELLED', 'REJECTED', 'COMPLETED'].includes(order.order_status)) failureCode = 'ORDER_NOT_PAYABLE';
@@ -488,7 +531,7 @@ function createPaymentService({ db, storage, verifier, config, notifier }) {
   async function reconcilePayment(customerId, orderId) {
     const prepared = await db.transaction(async (trx) => {
       const order = await ownedOrder(trx, customerId, orderId, { lock: true });
-      const payment = await latestPayment(trx, orderId, { lock: true });
+      let payment = await latestPayment(trx, orderId, { lock: true });
       if (!payment) throw new HttpError(404, 'payment_not_found');
       if (payment.status === 'PAID' || payment.verification_status === 'VERIFIED' || order.payment_status === 'PAID') {
         return { mode: 'paid', paymentId: payment.id };
@@ -496,8 +539,12 @@ function createPaymentService({ db, storage, verifier, config, notifier }) {
       if (order.payment_method !== 'PROMPTPAY' || ['CANCELLED', 'REJECTED', 'COMPLETED'].includes(order.order_status)) {
         throw new HttpError(409, 'order_not_payable');
       }
-      const slip = await trx('payment_slips').where({ payment_id: payment.id }).whereNull('deleted_at').forUpdate().first();
-      const verification = await trx('payment_verifications').where({ payment_id: payment.id }).orderBy('id', 'desc').forUpdate().first();
+      let slip = await trx('payment_slips').where({ payment_id: payment.id }).whereNull('deleted_at').forUpdate().first();
+      let verification = await trx('payment_verifications').where({ payment_id: payment.id }).orderBy('id', 'desc').forUpdate().first();
+      if (!canReconcilePayment(payment, slip, verification)) {
+        const rejectedRecovery = await recoverableRejectedPayment(trx, orderId, { lock: true });
+        if (rejectedRecovery) ({ payment, slip, verification } = rejectedRecovery);
+      }
       if (!slip) throw new HttpError(409, 'payment_reconciliation_unavailable');
       const hasStagedResult = verification?.status === 'PROCESSING'
         && Boolean(verification.provider_transaction_reference)
@@ -509,7 +556,8 @@ function createPaymentService({ db, storage, verifier, config, notifier }) {
       if (hasStagedResult) {
         return { mode: 'finalize', paymentId: payment.id, verificationId: verification.id };
       }
-      if (verification?.status === 'REJECTED' || payment.verification_status === 'REJECTED') {
+      if ((verification?.status === 'REJECTED' || payment.verification_status === 'REJECTED')
+        && !rejectedRecoveryAllowed(verification)) {
         throw new HttpError(409, 'payment_reconciliation_unavailable');
       }
       const processingStartedAt = new Date(payment.updated_at || verification?.created_at || 0).getTime();

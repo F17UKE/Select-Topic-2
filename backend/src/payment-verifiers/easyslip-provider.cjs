@@ -48,26 +48,31 @@ function parseResult(payload, input, mapping, requestId) {
     && satang(data.amountInSlip) === satang(input.expectedAmount)
     && satang(raw.amount.amount) === satang(input.expectedAmount);
   const account = data.matchedAccount;
-  const rawBankAccount = raw.receiver?.account?.bank?.account;
-  const rawBankDigits = accountDigits(rawBankAccount);
+  const rawBank = raw.receiver?.account?.bank;
+  const rawBankDigits = accountDigits(rawBank?.account);
+  const rawBankCode = raw.receiver?.bank?.id;
   // matchedAccount is the exact branch account returned because matchAccount=true. The raw slip
-  // may expose only a PromptPay proxy or masked bank account, so compare it only when it contains
-  // a full canonical bank number. A conflicting full value still fails closed.
-  const recipientMatches = account?.bank?.code === mapping.bankCode
-    && accountDigits(account?.bankNumber) === mapping.bankNumber
-    && raw.receiver?.bank?.id === mapping.bankCode
-    && (!rawBankDigits || rawBankDigits === mapping.bankNumber);
+  // may expose a PromptPay proxy, token, or masked representation. Only a canonical BANKAC value
+  // is an independent bank-account assertion that must agree with the immutable mapping.
+  const matchedAccountMatches = account?.bank?.code === mapping.bankCode
+    && accountDigits(account?.bankNumber) === mapping.bankNumber;
+  const rawHasCanonicalBankAccount = rawBank?.type === 'BANKAC'
+    && Boolean(rawBankDigits)
+    && /^\d{3}$/.test(String(rawBankCode || ''));
+  const rawBankConsistent = !rawHasCanonicalBankAccount
+    || (rawBankCode === mapping.bankCode && rawBankDigits === mapping.bankNumber);
+  const recipientMatches = matchedAccountMatches && rawBankConsistent;
   const failureCode = !amountMatches ? 'AMOUNT_MISMATCH' : !recipientMatches ? 'RECIPIENT_MISMATCH' : null;
   return {
     provider: 'easyslip-v2', providerRequestId: requestId,
     status: failureCode ? 'REJECTED' : 'VERIFIED', failureCode,
     transactionReference: reference, amount: data.amountInSlip,
-    providerDuplicate: data.isDuplicate,
+    providerDuplicate: data.isDuplicate === true,
     recipient: { type: input.expectedRecipientType, value: input.expectedRecipient },
     recipientVerified: Boolean(recipientMatches), merchantId: input.merchantId,
     rawRedacted: { provider: 'easyslip-v2', http_status: 200, duplicate: data.isDuplicate,
       amount_matches: amountMatches, recipient_matches: Boolean(recipientMatches),
-      matched_account_compared: true, raw_receiver_account_compared: Boolean(rawBankDigits),
+      matched_account_compared: true, raw_receiver_account_compared: rawHasCanonicalBankAccount,
       verification_stage: failureCode === 'AMOUNT_MISMATCH' ? 'AMOUNT' : failureCode === 'RECIPIENT_MISMATCH' ? 'RECIPIENT' : 'FINALIZE',
       reference_digest: crypto.createHash('sha256').update(reference).digest('hex'), failure_code: failureCode },
   };
