@@ -269,7 +269,7 @@ function createPaymentService({ db, storage, verifier, config, notifier }) {
     return { reference, amountMatches, recipientMatches, failureCode, verificationStage };
   }
 
-  async function stageProviderResult(customerId, orderId, paymentId, verificationId, result) {
+  async function stageProviderResult(customerId, orderId, paymentId, verificationId, result, { reconciliation = false } = {}) {
     return db.transaction(async (trx) => {
       const order = await ownedOrder(trx, customerId, orderId, { lock: true });
       const payment = await trx('payments').where({ id: paymentId, order_id: orderId }).forUpdate().first();
@@ -281,8 +281,17 @@ function createPaymentService({ db, storage, verifier, config, notifier }) {
       const duplicate = evaluated.reference
         ? await trx('payments').where({ transaction_reference: evaluated.reference }).whereNot({ id: payment.id }).first('id')
         : null;
-      if (!evaluated.failureCode && duplicate) {
-        evaluated.failureCode = 'DUPLICATE_TRANSACTION_REFERENCE';
+      const priorSamePayment = result.providerDuplicate === true && evaluated.reference
+        ? await trx('payment_verifications').where({ payment_id: payment.id })
+          .whereNot({ id: verification.id }).where({
+            provider_transaction_reference: evaluated.reference,
+            amount_matches: true,
+            recipient_matches: true,
+          }).whereNull('failure_code').first('id')
+        : null;
+      if (!evaluated.failureCode && (duplicate || (result.providerDuplicate === true && !priorSamePayment))) {
+        evaluated.failureCode = result.providerDuplicate === true && reconciliation
+          ? 'PROVIDER_DUPLICATE_REQUIRES_REVIEW' : 'DUPLICATE_TRANSACTION_REFERENCE';
         evaluated.verificationStage = 'DUPLICATE';
       }
       const now = trx.fn.now();
@@ -379,8 +388,8 @@ function createPaymentService({ db, storage, verifier, config, notifier }) {
     }
   }
 
-  async function finalize(customerId, orderId, paymentId, verificationId, result) {
-    const staged = await stageProviderResult(customerId, orderId, paymentId, verificationId, result);
+  async function finalize(customerId, orderId, paymentId, verificationId, result, options) {
+    const staged = await stageProviderResult(customerId, orderId, paymentId, verificationId, result, options);
     if (!staged.ready) return { verified: false, queued: staged.paid };
     return finalizeStaged(customerId, orderId, paymentId, verificationId);
   }
@@ -592,7 +601,7 @@ function createPaymentService({ db, storage, verifier, config, notifier }) {
       await markProviderError(customerId, orderId, prepared.payment.id, prepared.verificationId, error);
       return getPayment(customerId, orderId, prepared.payment.id);
     }
-    const finalized = await finalize(customerId, orderId, prepared.payment.id, prepared.verificationId, result);
+    const finalized = await finalize(customerId, orderId, prepared.payment.id, prepared.verificationId, result, { reconciliation: true });
     if (finalized.verified && !finalized.queued) await notifySafely(notifier, 'PAYMENT_VERIFIED', orderId);
     return getPayment(customerId, orderId, prepared.payment.id);
   }

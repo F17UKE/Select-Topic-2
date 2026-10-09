@@ -302,13 +302,50 @@ test('PromptPay payment pipeline: ownership, QR, upload validation, verification
         assert.equal(calls, 0);
         const response = await client.post(`/api/orders/${order.id}/payment/slip`).field('amount', '1')
           .attach('slip', png(`easy-${outcome}`), { filename: 'slip.png', contentType: 'image/png' }).expect(200);
-        assert.equal(response.body.payment.status, ['success', 'duplicate'].includes(outcome) ? 'PAID' : 'FAILED');
-        if (['success', 'duplicate'].includes(outcome)) {
+        assert.equal(response.body.payment.status, outcome === 'success' ? 'PAID' : 'FAILED');
+        if (outcome === 'duplicate') {
+          assert.equal(response.body.payment.verification.failure_code, 'DUPLICATE_TRANSACTION_REFERENCE');
+          assert.equal((await db('orders').where({ id: order.id }).first('payment_status')).payment_status, 'FAILED');
+        }
+        if (outcome === 'success') {
           await client.post(`/api/orders/${order.id}/payment/slip`).attach('slip', png('easy-repeat'), { filename: 'slip.png', contentType: 'image/png' }).expect(200);
           assert.equal(calls, 1, 'paid replay must not call the provider again');
           assert.equal(response.body.payment.amount_transferred, order.total_amount);
         }
       }
+    });
+
+    await t.test('EasySlip duplicate is accepted only for a proven same-payment reconciliation', async () => {
+      const { createEasyslipProvider } = require('../src/payment-verifiers/easyslip-provider.cjs');
+      const config = { verificationMode: 'easyslip', maxUploadBytes: 4194304, retentionHours: 24,
+        easyslipApiBaseUrl: 'https://api.easyslip.com/v2', easyslipApiKey: 'synthetic-only',
+        easyslipMerchantAccounts: { [merchant.id]: { promptpayType: merchant.promptpay_identifier_type,
+          promptpayId: merchant.promptpay_id, bankCode: '999', bankNumber: '0000000099' } } };
+      const order = await createOrder();
+      const reference = `EASY-RETRY-${order.id}`;
+      let calls = 0;
+      const verifier = createEasyslipProvider(config, { request: async () => {
+        calls++;
+        if (calls === 1) throw new Error('synthetic transport loss');
+        return { statusCode: 200, body: JSON.stringify({ success: true, data: {
+          isDuplicate: true, isAmountMatched: true, amountInOrder: order.total_amount, amountInSlip: order.total_amount,
+          matchedAccount: { bank: { code: '999' }, bankNumber: '0000000099' },
+          rawSlip: { date: '2026-10-01T00:00:00Z', transRef: reference, amount: { amount: order.total_amount },
+            receiver: { bank: { id: '999' }, account: { bank: { account: '0000000099' } } } },
+        } }) };
+      } });
+      const client = await login(appFor(db, 'U_LOCAL_CUSTOMER_001', storageRoot, { config, verifier }));
+      const payment = (await client.post(`/api/orders/${order.id}/payments`).send({}).expect(201)).body.payment;
+      const failed = await client.post(`/api/orders/${order.id}/payment/slip`)
+        .attach('slip', png('easy-own-retry'), { filename: 'slip.png', contentType: 'image/png' }).expect(200);
+      assert.equal(failed.body.payment.verification_status, 'ERROR');
+      await db('payment_verifications').where({ payment_id: payment.id }).update({
+        provider_transaction_reference: reference, amount_matches: true, recipient_matches: true, failure_code: null,
+      });
+      assert.equal((await client.post(`/api/orders/${order.id}/payments`).send({}).expect(201)).body.payment.id, payment.id);
+      const reconciled = await client.post(`/api/orders/${order.id}/payment/reconcile`).send({}).expect(200);
+      assert.equal(reconciled.body.payment.status, 'PAID');
+      assert.equal(calls, 2);
     });
   } finally {
     if (originalFinanceRuntime) {

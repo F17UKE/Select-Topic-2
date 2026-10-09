@@ -62,6 +62,7 @@ function parseResult(payload, input, mapping, requestId) {
     provider: 'easyslip-v2', providerRequestId: requestId,
     status: failureCode ? 'REJECTED' : 'VERIFIED', failureCode,
     transactionReference: reference, amount: data.amountInSlip,
+    providerDuplicate: data.isDuplicate,
     recipient: { type: input.expectedRecipientType, value: input.expectedRecipient },
     recipientVerified: Boolean(recipientMatches), merchantId: input.merchantId,
     rawRedacted: { provider: 'easyslip-v2', http_status: 200, duplicate: data.isDuplicate,

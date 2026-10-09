@@ -39,10 +39,11 @@ for (const [name, change, code] of [
   const result = await adapter(payload).verify(input);
   assert.equal(result.status, 'REJECTED'); assert.equal(result.failureCode, code);
 });
-test('EasySlip accepts provider duplicate only after full amount/recipient validation', async () => {
+test('EasySlip surfaces provider duplicate only after full amount/recipient validation', async () => {
   const payload = success(); payload.data.isDuplicate = true;
   const result = await adapter(payload).verify(input);
   assert.equal(result.status, 'VERIFIED');
+  assert.equal(result.providerDuplicate, true);
   assert.equal(result.rawRedacted.duplicate, true);
   assert.equal(result.recipientVerified, true);
 });

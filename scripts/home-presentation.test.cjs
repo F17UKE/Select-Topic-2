@@ -76,6 +76,8 @@ test('payment input errors remain safe and boundary validation accepts only supp
   for (const file of [null, { type: 'text/plain', size: 1 }, { type: 'image/png', size: 4194305 }, { type: 'image/jpeg', size: 0 }]) assert.ok(validateSlipFile(file));
   assert.ok(!paymentErrorMessage('private-key-provider-response').includes('private'));
   assert.match(paymentErrorMessage('SLIP_NOT_FOUND'), /ไม่พบข้อมูลสลิป/);
+  assert.equal(paymentErrorMessage('RECIPIENT_MISMATCH'), 'บัญชีผู้รับในสลิปไม่ตรงกับบัญชีรับชำระเงิน');
+  assert.equal(paymentErrorMessage('INVALID_SLIP'), 'ไม่พบข้อมูลสลิป กรุณาใช้สลิปจากธนาคารที่มี QR ชัดเจน');
   assert.match(paymentErrorMessage('INVALID_IMAGE_FORMAT'), /ไฟล์รูปไม่ถูกต้อง/);
   assert.match(paymentErrorMessage('SLIP_PENDING'), /ธนาคารกำลังประมวลผล/);
   assert.match(paymentErrorMessage('INVALID_API_KEY'), /ติดต่อผู้ดูแล/);
