@@ -1,6 +1,7 @@
 const crypto = require('node:crypto');
 const { HttpError } = require('./http.cjs');
 const { validateClaims } = require('./line-identity-provider.cjs');
+const { SESSION_SECONDS, sessionExpired } = require('./session-lifetime.cjs');
 
 const SESSION_COOKIE = 'customer_session';
 
@@ -38,13 +39,17 @@ function readCookie(header, name) {
   if (!header) return null;
   for (const part of header.split(';')) {
     const [key, ...value] = part.trim().split('=');
-    if (key === name) return decodeURIComponent(value.join('='));
+    if (key === name) {
+      try { return decodeURIComponent(value.join('=')); }
+      catch { return null; }
+    }
   }
   return null;
 }
 
-function createCustomerAuth({ db, config = customerAuthConfig(), identityProvider, randomUUID = crypto.randomUUID }) {
+function createCustomerAuth({ db, config = customerAuthConfig(), resolveConfig, identityProvider, randomUUID = crypto.randomUUID, now = Date.now }) {
   const sessions = new Map();
+  const getConfig = async () => resolveConfig ? resolveConfig() : config;
 
   async function findCustomer(lineUserId) {
     return db('customers')
@@ -54,6 +59,7 @@ function createCustomerAuth({ db, config = customerAuthConfig(), identityProvide
   }
 
   async function loginDevelopmentCustomer() {
+    const config = await getConfig();
     if (config.mode !== 'mock' || !config.devLoginEnabled) {
       throw new HttpError(404, 'not_found');
     }
@@ -62,15 +68,17 @@ function createCustomerAuth({ db, config = customerAuthConfig(), identityProvide
       throw new HttpError(503, 'dev_customer_missing', 'Run the local seed before using dev login');
     }
     const token = randomUUID();
-    sessions.set(token, { customerId: customer.id, createdAt: Date.now() });
+    sessions.set(token, { customerId: customer.id, createdAt: now() });
     return { token, customer };
   }
 
   async function loginLineCustomer(idToken) {
+    const config = await getConfig();
+    if (config.loginEnabled === false) throw new HttpError(503, 'line_login_disabled');
     if (config.mode !== 'line') throw new HttpError(404, 'not_found');
     if (!identityProvider || !config.lineChannelId) throw new HttpError(503, 'line_auth_not_configured');
     const verified = await identityProvider.verifyIdToken(idToken, config.lineChannelId);
-    const claims = validateClaims(verified, config.lineChannelId);
+    const claims = validateClaims(verified, config.lineChannelId, now());
     let customer = await findCustomer(claims.sub);
     if (!customer) {
       try {
@@ -89,7 +97,7 @@ function createCustomerAuth({ db, config = customerAuthConfig(), identityProvide
     if (!customer) throw new HttpError(401, 'line_customer_inactive');
     const address = await db('customer_addresses').where({ customer_id: customer.id }).first('id');
     const token = randomUUID();
-    sessions.set(token, { customerId: customer.id, createdAt: Date.now() });
+    sessions.set(token, { customerId: customer.id, createdAt: now() });
     return { token, customer, onboarding_required: !customer.phone || !address };
   }
 
@@ -97,7 +105,10 @@ function createCustomerAuth({ db, config = customerAuthConfig(), identityProvide
     const bearer = req.get('authorization')?.match(/^Bearer\s+(.+)$/i)?.[1];
     const token = bearer || readCookie(req.get('cookie'), SESSION_COOKIE);
     const session = token ? sessions.get(token) : null;
-    if (!session) throw new HttpError(401, 'authentication_required');
+    if (!session || sessionExpired(session, now())) {
+      if (token) sessions.delete(token);
+      throw new HttpError(401, 'authentication_required');
+    }
     const customer = await db('customers')
       .select('id', 'line_user_id', 'display_name', 'profile_image_url', 'phone', 'email')
       .where({ id: session.customerId, is_active: true })
@@ -115,7 +126,7 @@ function createCustomerAuth({ db, config = customerAuthConfig(), identityProvide
 
   function cookie(token) {
     const secure = config.secureCookie ? '; Secure' : '';
-    return `${SESSION_COOKIE}=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=28800${secure}`;
+    return `${SESSION_COOKIE}=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_SECONDS}${secure}`;
   }
 
   function clearCookie() {
@@ -123,7 +134,7 @@ function createCustomerAuth({ db, config = customerAuthConfig(), identityProvide
     return `${SESSION_COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${secure}`;
   }
 
-  return { config, loginDevelopmentCustomer, loginLineCustomer, authenticate, logout, cookie, clearCookie };
+  return { config, getConfig, loginDevelopmentCustomer, loginLineCustomer, authenticate, logout, cookie, clearCookie };
 }
 
 module.exports = { SESSION_COOKIE, customerAuthConfig, createCustomerAuth };

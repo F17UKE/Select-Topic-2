@@ -1,0 +1,3 @@
+'use client';
+import { AdminResourcePage } from '../../../components/admin-resource-page';
+export default function Page() { return <AdminResourcePage title="ประวัติการดำเนินการ" description="บันทึกการเปลี่ยนแปลงและกิจกรรมของผู้ดูแลระบบ" endpoint="/api/admin/audit-logs" extraFilters={[{key:'actor_id',label:'รหัสผู้ดำเนินการ',type:'number'},{key:'action',label:'การดำเนินการ'},{key:'entity',label:'ประเภทข้อมูล'},{key:'from',label:'ตั้งแต่',type:'date'},{key:'to',label:'ถึง',type:'date'}]} columns={[{key:'created_at',label:'เวลา',type:'date'},{key:'actor_name',label:'ผู้ดำเนินการ'},{key:'action',label:'การดำเนินการ',type:'status'},{key:'entity_type',label:'ประเภทข้อมูล'},{key:'entity_id',label:'ID'},{key:'ip_address',label:'IP'}]} />; }

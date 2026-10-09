@@ -1,6 +1,9 @@
 const express = require('express');
 const multer = require('multer');
 const { asyncRoute, HttpError, positiveId, textField } = require('./http.cjs');
+const { createAdminRouter } = require('./admin-router.cjs');
+const { createMerchantManagementRouter } = require('./merchant-management-router.cjs');
+const { createFinanceRouter } = require('./finance-router.cjs');
 
 function addressPayload(body, { partial = false } = {}) {
   const fields = {};
@@ -15,7 +18,7 @@ function addressPayload(body, { partial = false } = {}) {
   return fields;
 }
 
-function createApp({ checkDatabase, auth, customers, stores, orders, idempotency, payments, staffAuth, merchantOrders, riderOrders, lineWebhook, security = {} }) {
+function createApp({ checkDatabase, auth, customers, stores, orders, engagement, idempotency, payments, staffAuth, merchantOrders, riderOrders, lineWebhook, adminAuth, admins, integrations, storage, management, finance, security = {} }) {
   const app = express();
   app.disable('x-powered-by');
   if (security.trustProxyHops) app.set('trust proxy', security.trustProxyHops);
@@ -45,6 +48,24 @@ function createApp({ checkDatabase, auth, customers, stores, orders, idempotency
     app.post('/webhooks/line', webhookBody, webhookRoute);
   }
   app.use(express.json({ limit: '100kb' }));
+  if (finance && adminAuth && staffAuth) app.use('/api/finance', createFinanceRouter({ finance, adminAuth, staffAuth, storage }));
+  if (management) app.get('/api/catalog/images/:namespace/:merchantId/:file', asyncRoute(async(req,res)=>{
+    const image=await management.image(`${req.params.namespace}/${req.params.merchantId}/${req.params.file}`);
+    res.set({'Content-Type':image.contentType,'Cache-Control':'public, max-age=300','X-Content-Type-Options':'nosniff'}).send(image.buffer);
+  }));
+  if (management && staffAuth) app.use('/api/merchant/management', createMerchantManagementRouter({ staffAuth, management }));
+
+  if (adminAuth && admins) {
+    app.use('/api/admin', createAdminRouter({ adminAuth, admins, integrations, checkDatabase, storage, maxUploadBytes: payments?.maxUploadBytes }));
+    app.get('/api/banners/active', asyncRoute(async (_req, res) => {
+      res.json({ banners: (await admins.listBanners({ page: 1, limit: 20 }, { publicOnly: true })).items });
+    }));
+    app.get('/api/banners/:id/image', asyncRoute(async (req, res) => {
+      if (!storage?.read) throw new HttpError(503, 'banner_storage_unavailable', 'ไม่สามารถโหลดรูปแบนเนอร์');
+      const image = await storage.read(await admins.bannerImage(positiveId(req.params.id, 'bannerId')));
+      res.set({ 'Content-Type': image.contentType, 'Cache-Control': 'public, max-age=300', 'Content-Length': image.buffer.length }).send(image.buffer);
+    }));
+  }
 
   app.get('/api/health', async (_req, res) => {
     let database;
@@ -64,13 +85,14 @@ function createApp({ checkDatabase, auth, customers, stores, orders, idempotency
       next();
     });
 
-    app.get('/api/auth/config', (_req, res) => {
+    app.get('/api/auth/config', asyncRoute(async (_req, res) => {
+      const config = auth.getConfig ? await auth.getConfig() : auth.config;
       res.json({
-        mode: auth.config.mode,
-        dev_login_enabled: auth.config.devLoginEnabled,
-        liff_id: auth.config.mode === 'line' ? auth.config.liffId : null,
+        mode: config.mode,
+        dev_login_enabled: config.devLoginEnabled,
+        liff_id: config.mode === 'line' ? config.liffId : null,
       });
-    });
+    }));
 
     app.post('/api/dev/auth/login', asyncRoute(async (_req, res) => {
       const session = await auth.loginDevelopmentCustomer();
@@ -158,7 +180,43 @@ function createApp({ checkDatabase, auth, customers, stores, orders, idempotency
       res.json({ menu_item: await stores.menuItemById(positiveId(req.params.id, 'menuItemId')) });
     }));
 
+    if (engagement) {
+      app.get('/api/customer/favorites', requireCustomer, asyncRoute(async (req, res) => {
+        const addressId = req.query.addressId === undefined ? null : positiveId(req.query.addressId, 'addressId');
+        res.json({ merchants: await stores.listFavoriteMerchants({ customerId: req.customer.id, addressId }) });
+      }));
+      app.post('/api/customer/favorites/:merchantId', requireCustomer, asyncRoute(async (req, res) => {
+        res.status(201).json(await engagement.addFavorite(req.customer.id, positiveId(req.params.merchantId, 'merchantId')));
+      }));
+      app.delete('/api/customer/favorites/:merchantId', requireCustomer, asyncRoute(async (req, res) => {
+        res.json(await engagement.removeFavorite(req.customer.id, positiveId(req.params.merchantId, 'merchantId')));
+      }));
+      app.get('/api/merchants/:id/reviews', requireCustomer, asyncRoute(async (req, res) => {
+        res.json(await engagement.listMerchantReviews(positiveId(req.params.id, 'merchantId')));
+      }));
+      app.get('/api/customer/notifications', requireCustomer, asyncRoute(async (req, res) => {
+        res.json(await engagement.listNotifications(req.customer.id));
+      }));
+      app.patch('/api/customer/notifications/:id/read', requireCustomer, asyncRoute(async (req, res) => {
+        await engagement.markNotificationRead(req.customer.id, positiveId(req.params.id, 'notificationId'));
+        res.json({ ok: true });
+      }));
+      app.post('/api/customer/notifications/read-all', requireCustomer, asyncRoute(async (req, res) => {
+        res.json(await engagement.markAllNotificationsRead(req.customer.id));
+      }));
+    }
+
     if (orders && idempotency) {
+      app.post('/api/orders/quote', requireCustomer, asyncRoute(async (req, res) => {
+        res.json({ quote: await orders.quoteOrder(req.customer.id, req.body) });
+      }));
+      app.get('/api/promotions', requireCustomer, asyncRoute(async (req, res) => {
+        const merchantId = req.query.merchantId === undefined || req.query.merchantId === '' ? null : positiveId(req.query.merchantId, 'merchantId');
+        res.json({ promotions: await orders.promotions.list(merchantId) });
+      }));
+      app.get('/api/promotions/:id', requireCustomer, asyncRoute(async (req, res) => {
+        res.json({ promotion: await orders.promotions.detail(positiveId(req.params.id, 'promotionId')) });
+      }));
       app.post('/api/orders', requireCustomer, asyncRoute(async (req, res) => {
         const result = await idempotency.execute({
           scope: `customer:${req.customer.id}:orders`,
@@ -179,10 +237,23 @@ function createApp({ checkDatabase, auth, customers, stores, orders, idempotency
         res.json({ order: await orders.getOrder(req.customer.id, positiveId(req.params.id, 'orderId')) });
       }));
 
+      if (engagement) {
+        app.get('/api/orders/:id/review', requireCustomer, asyncRoute(async (req, res) => {
+          res.json(await engagement.getOrderReview(req.customer.id, positiveId(req.params.id, 'orderId')));
+        }));
+        app.post('/api/orders/:id/review', requireCustomer, asyncRoute(async (req, res) => {
+          const review = await engagement.createReview(req.customer.id, positiveId(req.params.id, 'orderId'), req.body || {});
+          res.status(201).json({ review });
+        }));
+        app.post('/api/orders/:id/reorder-preview', requireCustomer, asyncRoute(async (req, res) => {
+          res.json(await engagement.reorderPreview(req.customer.id, positiveId(req.params.id, 'orderId')));
+        }));
+      }
+
       if (payments) {
         const slipUpload = multer({
           storage: multer.memoryStorage(),
-          limits: { fileSize: payments.maxUploadBytes, files: 1, fields: 4 },
+          limits: { fileSize: payments.slipMaxUploadBytes || payments.maxUploadBytes, files: 1, fields: 4 },
         }).single('slip');
 
         app.post('/api/orders/:id/payments', requireCustomer, asyncRoute(async (req, res) => {
@@ -192,6 +263,10 @@ function createApp({ checkDatabase, auth, customers, stores, orders, idempotency
 
         app.get('/api/orders/:id/payment', requireCustomer, asyncRoute(async (req, res) => {
           res.json(await payments.getPayment(req.customer.id, positiveId(req.params.id, 'orderId')));
+        }));
+
+        app.post('/api/orders/:id/payment/reconcile', requireCustomer, asyncRoute(async (req, res) => {
+          res.json(await payments.reconcilePayment(req.customer.id, positiveId(req.params.id, 'orderId')));
         }));
 
         app.get('/api/orders/:id/payment/qr', requireCustomer, asyncRoute(async (req, res) => {
@@ -307,9 +382,19 @@ function createApp({ checkDatabase, auth, customers, stores, orders, idempotency
     res.status(501).json({ error: 'line_webhook_not_implemented' });
   });
   app.use((_req, res) => res.status(404).json({ error: 'not_found' }));
-  app.use((error, _req, res, next) => {
+  app.use((error, req, res, next) => {
     void next;
+    if ((req.path.startsWith('/api/admin/') || req.path.startsWith('/api/merchant/management/') || req.path.startsWith('/api/finance/')) && !(error instanceof HttpError)) {
+      const conflict = ['23505', '23503'].includes(error?.code);
+      const invalid = error instanceof multer.MulterError || error?.type === 'entity.parse.failed' || error?.code === '23514';
+      const status = error?.code === 'LIMIT_FILE_SIZE' || error?.type === 'entity.too.large' ? 413 : conflict ? 409 : invalid ? 400 : 500;
+      const code = status === 413 ? 'upload_too_large' : conflict ? 'record_conflict' : invalid ? 'invalid_request' : 'internal_error';
+      return res.status(status).json({ ok: false, code, message: code });
+    }
     if (error instanceof HttpError) {
+      if (req.path.startsWith('/api/admin/')) {
+        return res.status(error.status).json({ ok: false, code: error.code, message: error.message });
+      }
       const body = { error: error.code, message: error.message };
       if (error.details) body.details = error.details;
       return res.status(error.status).json(body);

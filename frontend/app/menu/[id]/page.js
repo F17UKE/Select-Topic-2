@@ -5,18 +5,12 @@ import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
 import { AppShell, LoadingCards, SignInCard } from '../../../components/app-shell';
 import { CustomerDetailHeader } from '../../../components/customer/detail-header';
+import { MenuOptionGroup } from '../../../components/customer/menu-options';
+import styles from '../../../components/customer/menu-detail.module.css';
 import { Icon } from '../../../components/icons';
 import { api, baht } from '../../../lib/api';
 import { useCart } from '../../../lib/cart';
 import { useCustomer } from '../../../lib/use-customer';
-
-function optionRuleLabel(group) {
-  if (group.is_required && group.min_choices === 1 && group.max_choices === 1) return 'จำเป็น · เลือก 1';
-  if (group.is_required && group.min_choices === group.max_choices) return `จำเป็น · เลือก ${group.max_choices}`;
-  if (group.is_required) return `จำเป็น · อย่างน้อย ${group.min_choices} · สูงสุด ${group.max_choices}`;
-  if (group.max_choices === 1) return 'เลือกได้ 1';
-  return `เลือกได้สูงสุด ${group.max_choices}`;
-}
 
 export default function MenuDetailPage() {
   const { id } = useParams();
@@ -109,34 +103,32 @@ export default function MenuDetailPage() {
     return count >= group.min_choices && count <= group.max_choices;
   });
   const stockLimit = item.stock_quantity === null ? 99 : Math.min(99, item.stock_quantity);
-  const canOrder = item.is_available && quantity <= stockLimit && optionSelectionIsValid;
+  const canOrder = item.accepting_orders && item.is_available && quantity <= stockLimit && optionSelectionIsValid;
   return (
-    <AppShell variant="menu-detail" header={detailHeader}>
-      {item.image_url ? <div className="menu-detail-image"><Image src={item.image_url} alt={item.name} fill priority sizes="(max-width: 720px) 100vw, 680px" /></div> : <div className="menu-detail-image menu-image-fallback"><Icon name="cart" size={42} /><span>ยังไม่มีรูปเมนู</span></div>}
+    <div className={styles.page}><AppShell variant="menu-detail" header={detailHeader}>
+      {item.image_url ? <div className="menu-detail-image"><Image src={item.image_url} alt={item.name} fill priority sizes="(max-width: 760px) calc(100vw - 32px), 728px" /></div> : <div className="menu-detail-image menu-image-fallback"><Icon name="cart" size={42} /><span>ยังไม่มีรูปเมนู</span></div>}
+      <div className={styles.menuContent}>
       <section className="menu-detail-copy">
         <p className="menu-breadcrumb">{item.store_name} · {item.category_name}</p>
         <h1>{item.name}</h1>
         <p>{item.description}</p>
         <strong>{baht(item.price)}</strong>
-        {!item.is_available && <div className="notice">เมนูนี้หมดชั่วคราว</div>}
+        {!item.accepting_orders && <div className="notice">ร้านไม่พร้อมรับออเดอร์ใหม่</div>}
+        {item.stock_quantity === 0 ? <div className="notice">หมด</div> : !item.is_available && <div className="notice">ปิดขาย</div>}
       </section>
-      <div className="option-groups">
-        {item.option_groups.map((group) => (
-          <fieldset className="option-card" key={group.id}>
-            <legend><span>{group.name}</span><small>{optionRuleLabel(group)}</small></legend>
-            {group.choices.map((choice) => {
-              const checked = (selected[group.id] || []).includes(choice.id);
-              return <label className={!choice.is_available ? 'disabled' : ''} key={choice.id}><input type={group.max_choices === 1 ? 'radio' : 'checkbox'} name={`group-${group.id}`} checked={checked} disabled={!choice.is_available} onChange={() => toggleChoice(group, choice.id)} /><span>{choice.name}{!choice.is_available && ' · หมด'}</span><strong>{choice.extra_price ? `+${baht(choice.extra_price)}` : 'ไม่เพิ่มราคา'}</strong></label>;
-            })}
-          </fieldset>
-        ))}
-      </div>
-      <section className="item-customize-card">
-        <div className="quantity-row"><div><span>จำนวน</span><small>{item.stock_quantity === null ? 'มีสินค้า' : `เหลือ ${item.stock_quantity}`}</small></div><div className="quantity-control"><button type="button" aria-label="ลดจำนวน" disabled={quantity <= 1} onClick={() => setQuantity((value) => Math.max(1, value - 1))}><Icon name="minus" size={18} /></button><strong>{quantity}</strong><button type="button" aria-label="เพิ่มจำนวน" disabled={quantity >= stockLimit} onClick={() => setQuantity((value) => Math.min(stockLimit, value + 1))}><Icon name="plus" size={18} /></button></div></div>
+      {!!item.option_groups.length && <div className="option-groups">
+        {item.option_groups.map((group) => <MenuOptionGroup key={group.id} group={group} item={item} selectedIds={selected[group.id] || []} onToggle={toggleChoice} />)}
+      </div>}
+      <section className={styles.note}>
         <label>หมายเหตุถึงร้าน<textarea value={note} onChange={(event) => setNote(event.target.value)} maxLength={500} rows={3} placeholder="เช่น ไม่ใส่ผัก แยกน้ำ" /></label>
       </section>
+      <section className={styles.quantity} aria-labelledby="menu-quantity-title">
+        <div><h2 id="menu-quantity-title">จำนวน</h2>{item.stock_quantity >= 1 && item.stock_quantity <= 5 && <small>เหลือเพียง {item.stock_quantity} รายการ</small>}</div>
+        <div className="quantity-control"><button type="button" aria-label="ลดจำนวน" disabled={quantity <= 1} onClick={() => setQuantity((value) => Math.max(1, value - 1))}><Icon name="minus" size={18} /></button><strong>{quantity}</strong><button type="button" aria-label="เพิ่มจำนวน" disabled={quantity >= stockLimit} onClick={() => setQuantity((value) => Math.min(stockLimit, value + 1))}><Icon name="plus" size={18} /></button></div>
+      </section>
       {actionError && <p className="form-error" role="alert">{actionError}</p>}
-      <section className="preview-bar"><div><span>รวม · {quantity} รายการ</span><strong>{baht(previewTotal)}</strong></div><button type="button" disabled={!canOrder} onClick={submitCart}>{editingId ? 'บันทึกการแก้ไข' : 'เพิ่มลงตะกร้า'}</button></section>
-    </AppShell>
+      </div>
+      <section className={styles.purchaseBar} aria-label="ยอดรวมและเพิ่มลงตะกร้า"><div aria-live="polite" aria-atomic="true"><span>รวมทั้งหมด</span><strong>{baht(previewTotal)}</strong></div><button type="button" disabled={!canOrder} aria-disabled={!canOrder} onClick={submitCart}>{editingId ? 'บันทึกการแก้ไข' : 'เพิ่มลงตะกร้า'}</button></section>
+    </AppShell></div>
   );
 }

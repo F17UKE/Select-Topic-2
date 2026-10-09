@@ -1,4 +1,6 @@
 const bcrypt = require('bcryptjs');
+const fs = require('node:fs/promises');
+const path = require('node:path');
 
 async function upsertOne(trx, table, where, values) {
   const existing = await trx(table).where(where).first('id');
@@ -47,6 +49,10 @@ async function seedMerchant(trx, merchant, soiIds) {
     promptpay_identifier_type: 'PHONE',
     promptpay_id: merchant.phone,
     is_open: merchant.open,
+    is_active: true,
+    suspended_at: null,
+    suspension_reason: null,
+    suspended_by_admin_id: null,
     updated_at: trx.fn.now(),
     deleted_at: null,
   });
@@ -127,9 +133,12 @@ exports.seed = async (knex) => {
           { name: 'Rice Dishes', items: [
             { name: 'Local Basil Rice', description: 'Fragrant basil stir-fry over jasmine rice', image: '/demo/basil-rice.svg', price: 60, stock: 20, groups: [commonSpice, { name: 'Extras', required: false, min: 0, max: 2, choices: [{ name: 'Fried egg', price: 10 }, { name: 'Extra rice', price: 10 }] }] },
             { name: 'Garlic Chicken Rice', description: 'Crispy garlic chicken with cucumber', image: '/demo/garlic-chicken.svg', price: 65, stock: 12, groups: [{ name: 'Rice', required: true, min: 1, max: 1, choices: [{ name: 'Jasmine rice', price: 0 }, { name: 'Brown rice', price: 10 }] }] },
+            { name: 'Crispy Pork Basil Rice', description: 'Crispy pork, holy basil and jasmine rice', image: '/demo/basil-rice.svg', price: 75, stock: 14, groups: [commonSpice] },
+            { name: 'Pepper Chicken Rice', description: 'Black pepper chicken with seasonal vegetables', image: '/demo/garlic-chicken.svg', price: 70, stock: 11 },
           ] },
           { name: 'Drinks', items: [
             { name: 'Thai Milk Tea', description: 'Freshly brewed and lightly sweet', image: '/demo/thai-tea.svg', price: 40, stock: 30, groups: [{ name: 'Sweetness', required: true, min: 1, max: 1, choices: [{ name: 'No sugar', price: 0 }, { name: 'Half sweet', price: 0 }, { name: 'Regular', price: 0 }] }] },
+            { name: 'Lime Tea', description: 'Fresh lime with fragrant black tea', image: '/demo/thai-tea.svg', price: 35, stock: 24 },
           ] },
         ],
       },
@@ -141,9 +150,12 @@ exports.seed = async (knex) => {
           { name: 'Noodles', items: [
             { name: 'Tom Yum Noodles', description: 'Tangy broth, roasted peanuts and lime', image: '/demo/tom-yum-noodles.svg', price: 70, stock: 16, groups: [commonSpice, { name: 'Noodle type', required: true, min: 1, max: 1, choices: [{ name: 'Rice noodles', price: 0 }, { name: 'Egg noodles', price: 5 }] }] },
             { name: 'Dry Pork Noodles', description: 'House sauce with herbs and crispy garlic', image: '/demo/dry-noodles.svg', price: 65, stock: 10, groups: [{ name: 'Size', required: true, min: 1, max: 1, choices: [{ name: 'Regular', price: 0 }, { name: 'Large', price: 20 }] }] },
+            { name: 'Clear Soup Noodles', description: 'Light pork broth with vegetables and herbs', image: '/demo/tom-yum-noodles.svg', price: 60, stock: 18 },
+            { name: 'Spicy Dry Noodles', description: 'Dry noodles tossed with chilli, lime and peanuts', image: '/demo/dry-noodles.svg', price: 70, stock: 9, groups: [commonSpice] },
           ] },
           { name: 'Sides', items: [
             { name: 'Crispy Wontons', description: 'Six golden wontons with sweet chilli dip', image: '/demo/wontons.svg', price: 45, stock: 8 },
+            { name: 'Pork Dumplings', description: 'Steamed pork dumplings with soy dip', image: '/demo/wontons.svg', price: 55, stock: 12 },
           ] },
         ],
       },
@@ -155,9 +167,12 @@ exports.seed = async (knex) => {
           { name: 'Healthy Bowls', items: [
             { name: 'Sesame Chicken Bowl', description: 'Greens, grains and sesame chicken', image: '/demo/sesame-bowl.svg', price: 95, stock: 6, groups: [{ name: 'Dressing', required: true, min: 1, max: 1, choices: [{ name: 'Sesame', price: 0 }, { name: 'Lime soy', price: 0 }] }] },
             { name: 'Tofu Garden Bowl', description: 'Seasonal vegetables, tofu and brown rice', image: '/demo/tofu-bowl.svg', price: 85, stock: 0, available: false },
+            { name: 'Salmon Grain Bowl', description: 'Grilled salmon, grains and fresh vegetables', image: '/demo/sesame-bowl.svg', price: 125, stock: 5 },
+            { name: 'Avocado Tofu Bowl', description: 'Avocado, tofu, vegetables and lime soy dressing', image: '/demo/tofu-bowl.svg', price: 105, stock: 7 },
           ] },
           { name: 'Smoothies', items: [
             { name: 'Mango Oat Smoothie', description: 'Mango, oat milk and banana', image: '/demo/mango-smoothie.svg', price: 65, stock: 15 },
+            { name: 'Berry Banana Smoothie', description: 'Mixed berries, banana and oat milk', image: '/demo/mango-smoothie.svg', price: 70, stock: 10 },
           ] },
         ],
       },
@@ -191,5 +206,147 @@ exports.seed = async (knex) => {
         is_active: true, updated_at: trx.fn.now(), deleted_at: null,
       });
     }
+
+    // DEV ONLY. This synthetic credential is guarded by the loopback/local database check above.
+    const adminPasswordHash = await bcrypt.hash('local-admin-only', 12);
+    await upsertOne(trx, 'platform_admins', { username: 'local_super_admin' }, {
+      password_hash: adminPasswordHash,
+      full_name: 'Local Super Admin',
+      email: 'admin@example.invalid',
+      role: 'SUPER_ADMIN',
+      is_active: true,
+      updated_at: trx.fn.now(),
+      deleted_at: null,
+    });
+    const localAdmin = await trx('platform_admins').where({ username: 'local_super_admin' }).first('id');
+    await upsertOne(trx, 'coupons', { code: 'WELCOME10' }, {
+      name: 'ยินดีต้อนรับ ลด 10%',
+      description: 'คูปองตัวอย่างสำหรับ Local Development',
+      merchant_id: null,
+      funding_source: 'MERCHANT', promotion_type: 'PERCENTAGE',
+      value: 10,
+      minimum_order_amount: 50,
+      maximum_discount_amount: 30,
+      starts_at: new Date(Date.now() - 24 * 60 * 60 * 1000),
+      ends_at: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
+      usage_limit: 1000,
+      per_customer_limit: 100,
+      is_active: true,
+      created_by_admin_id: localAdmin.id,
+      updated_at: trx.fn.now(),
+      deleted_at: null,
+    });
+    await upsertOne(trx, 'promotions', { name: 'ส่งฟรีต้อนรับ Local' }, {
+      description: 'โปรโมชันตัวอย่างสำหรับ Local Development',
+      merchant_id: null,
+      funding_source: 'MERCHANT', promotion_type: 'FREE_DELIVERY',
+      value: 0,
+      minimum_order_amount: 50,
+      maximum_discount_amount: 25,
+      starts_at: new Date(Date.now() - 24 * 60 * 60 * 1000),
+      ends_at: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
+      usage_limit: null,
+      is_active: true,
+      created_by_admin_id: localAdmin.id,
+      updated_at: trx.fn.now(),
+      deleted_at: null,
+    });
+
+    const bannerObjectKey = 'banners/2026/10/00000000-0000-4000-8000-000000000001.png';
+    const storageRoot = path.resolve(process.env.SLIP_STORAGE_DIR || path.join(__dirname, '../storage'));
+    const bannerDestination = path.resolve(storageRoot, ...bannerObjectKey.split('/'));
+    if (!bannerDestination.startsWith(`${storageRoot}${path.sep}`)) throw new Error('Unsafe local demo banner path.');
+    await fs.mkdir(path.dirname(bannerDestination), { recursive: true });
+    await fs.copyFile(path.join(__dirname, 'assets/local-demo-banner.png'), bannerDestination);
+    await upsertOne(trx, 'banners', { title: 'Local Demo Food Picks' }, {
+      image_object_key: bannerObjectKey,
+      scope: 'GLOBAL',
+      merchant_id: null,
+      target_type: 'STORE',
+      target_value: String(firstMerchantId),
+      status: 'PUBLISHED',
+      starts_at: new Date('2026-01-01T00:00:00.000Z'),
+      ends_at: new Date('2030-01-01T00:00:00.000Z'),
+      sort_order: 1,
+      created_by_admin_id: localAdmin.id,
+      updated_at: trx.fn.now(),
+      deleted_at: null,
+    });
+
+    const demoOrderCode = 'DEMO-COMPLETED-001';
+    let demoOrder = await trx('orders').where({ order_code: demoOrderCode }).first('id');
+    if (!demoOrder) {
+      const merchant = await trx('merchants').where({ id: firstMerchantId }).forUpdate().first('last_order_number');
+      const merchantOrderNumber = merchant.last_order_number + 1;
+      await trx('merchants').where({ id: firstMerchantId }).update({ last_order_number: merchantOrderNumber });
+      const address = await trx('customer_addresses').where({ customer_id: customerId, is_default: true })
+        .join('dormitories as d', 'd.id', 'customer_addresses.dormitory_id')
+        .join('sois as s', 's.id', 'd.soi_id')
+        .select('customer_addresses.*', 'd.name as dormitory_name', 'd.location_text', 's.name as soi_name').first();
+      const rider = await trx('merchant_staffs').where({ merchant_id: firstMerchantId, role: 'RIDER', is_active: true }).whereNull('deleted_at').first('id');
+      const [createdOrder] = await trx('orders').insert({
+        order_code: demoOrderCode,
+        merchant_order_number: merchantOrderNumber,
+        customer_id: customerId,
+        merchant_id: firstMerchantId,
+        customer_address_id: address.id,
+        assigned_rider_id: rider.id,
+        delivery_type: 'DELIVERY',
+        status: 'COMPLETED',
+        payment_method: 'PROMPTPAY',
+        payment_status: 'PAID',
+        subtotal_amount: 60,
+        delivery_fee: 15,
+        discount_amount: 0,
+        total_amount: 75,
+        delivery_address_label: address.label,
+        delivery_soi_name: address.soi_name,
+        delivery_dormitory_name: address.dormitory_name,
+        delivery_location_text: address.location_text,
+        delivery_room_number: address.room_number,
+        delivery_contact_phone: address.contact_phone,
+        delivery_note: 'Local demo completed order',
+        accepted_at: trx.fn.now(),
+        delivering_at: trx.fn.now(),
+        completed_at: trx.fn.now(),
+      }).returning('id');
+      demoOrder = createdOrder;
+      const menuItem = await trx('menu_items').where({ merchant_id: firstMerchantId, name: 'Local Basil Rice' }).first('id');
+      await trx('order_items').insert({
+        order_id: demoOrder.id,
+        merchant_id: firstMerchantId,
+        menu_item_id: menuItem.id,
+        item_name: 'Local Basil Rice',
+        quantity: 1,
+        unit_price: 60,
+        note: 'Demo order',
+        is_completed: true,
+      });
+      await trx('payments').insert({
+        order_id: demoOrder.id,
+        method: 'PROMPTPAY',
+        status: 'PAID',
+        verification_status: 'VERIFIED',
+        expected_amount: 75,
+        amount_transferred: 75,
+        provider: 'LOCAL_DEMO',
+        transaction_reference: 'LOCAL-DEMO-TRANSACTION-001',
+        verified_at: trx.fn.now(),
+        paid_at: trx.fn.now(),
+      });
+    }
+    await upsertOne(trx, 'reviews', { order_id: demoOrder.id }, {
+      customer_id: customerId,
+      merchant_id: firstMerchantId,
+      rating: 5,
+      comment: 'อาหารอร่อย ส่งครบ และตรงเวลา',
+      status: 'PUBLISHED',
+      updated_at: trx.fn.now(),
+    });
+    await trx('system_settings').insert({
+      setting_key: 'platform_display_name',
+      setting_value: JSON.stringify('Select Topic 2'),
+      is_public: true,
+    }).onConflict('setting_key').ignore();
   });
 };

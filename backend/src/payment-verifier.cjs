@@ -1,5 +1,6 @@
 const { VerificationProviderError } = require('./payment-verifiers/errors.cjs');
 const { createMockProvider } = require('./payment-verifiers/mock-provider.cjs');
+const { createEasyslipProvider } = require('./payment-verifiers/easyslip-provider.cjs');
 const { createCheckslipProvider } = require('./payment-verifiers/checkslip-provider.cjs');
 
 function normalizeIdentifier(value) {
@@ -16,6 +17,7 @@ function identifiersMatch(actual, expected) {
 }
 
 function createPaymentVerifier(config, dependencies) {
+  if (config.verificationMode === 'easyslip') return createEasyslipProvider(config, dependencies);
   return config.verificationMode === 'mock'
     ? createMockProvider(dependencies)
     : createCheckslipProvider(config, dependencies);

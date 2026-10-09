@@ -9,6 +9,7 @@ const { spawn } = require('node:child_process');
 const { once } = require('node:events');
 require('../backend/src/env.cjs');
 const { createDatabase } = require('../backend/src/database.cjs');
+const { createCartSmoke } = require('./cart-smoke-helper.cjs');
 
 const root = path.resolve(__dirname, '..');
 
@@ -61,6 +62,15 @@ async function main() {
   let orderId;
   let merchantId;
   let baselineCounter;
+  let promotionId;
+  let couponId;
+  let couponBaselineUsage;
+  let phaseIReviewId;
+  let phaseIAdminId;
+  let phaseIAdminSessionBaseline;
+  let favoriteExisted = false;
+  const phaseI = process.argv.includes('--phase-i');
+  const idempotencyKey = `payment-smoke-${crypto.randomUUID()}`;
   try {
     const origin = `http://127.0.0.1:${port}`;
     assert.equal((await waitFor(`${origin}/api/health`, backend)).status, 200);
@@ -72,15 +82,57 @@ async function main() {
     const merchant = await db('merchants').where({ prefix: 'LOC' }).first();
     merchantId = merchant.id;
     baselineCounter = merchant.last_order_number;
+    if (phaseI) {
+      phaseIAdminId = (await db('platform_admins').where({ username: 'local_super_admin' }).first('id')).id;
+      phaseIAdminSessionBaseline = Number((await db('platform_admin_sessions').max('id as id').first()).id || 0);
+      const favorite = await db('customer_favorite_merchants').where({ customer_id: customer.id, merchant_id: merchantId }).first('id');
+      favoriteExisted = Boolean(favorite);
+      await json(origin, `/api/customer/favorites/${merchantId}`, { method: 'POST', cookie, body: {} });
+      const coupon = await db('coupons').whereRaw('lower(code) = lower(?)', ['WELCOME10']).where({ is_active: true }).whereNull('deleted_at').first();
+      assert.ok(coupon, 'Run the local seed before Phase I smoke');
+      couponId = coupon.id;
+      couponBaselineUsage = coupon.usage_count;
+    }
+    if (process.argv.includes('--promotion')) {
+      [{ id: promotionId }] = await db('promotions').insert({ name: 'Local discounted pipeline smoke', merchant_id: merchantId,
+        funding_source: 'MERCHANT', promotion_type: 'PERCENTAGE', value: 10, minimum_order_amount: 0,
+        starts_at: new Date(Date.now() - 60000), ends_at: new Date(Date.now() + 3600000), usage_limit: 1,
+      }).returning('id');
+    }
     const item = await db('menu_items').where({ merchant_id: merchant.id, name: 'Local Basil Rice' }).first('id');
     const choice = await db('menu_option_choices as c').join('menu_option_groups as g', 'g.id', 'c.option_group_id')
       .where({ 'g.menu_item_id': item.id, 'g.name': 'Spiciness', 'c.name': 'Mild' }).first('c.id');
+    const listing = await json(origin, `/api/merchants?addressId=${address.id}`, { cookie });
+    assert.ok(listing.merchants.some((row) => row.id === merchantId));
+    assert.equal((await json(origin, `/api/merchants/${merchantId}?addressId=${address.id}`, { cookie })).merchant.id, merchantId);
+    assert.ok((await json(origin, `/api/merchants/${merchantId}/menu`, { cookie })).categories.length);
+    const menu = (await json(origin, `/api/menu-items/${item.id}`, { cookie })).menu_item;
+    assert.equal(menu.id, item.id);
+    const cart = createCartSmoke();
+    assert.equal(cart().addOrUpdate({ merchantId, merchantName: merchant.store_name, menuItemId: menu.id,
+      quantity: 1, note: 'Local E2E kitchen note', optionChoiceIds: [choice.id], choices: [], unitPriceEstimate: menu.price }), true);
+    assert.equal(cart().count, 1);
+    const payload = { merchantId: cart().cart.merchantId, promotionId, couponCode: phaseI ? 'WELCOME10' : undefined,
+      addressId: address.id, deliveryType: 'DELIVERY', deliveryNote: 'Local E2E delivery note',
+      items: cart().cart.items.map(({ menuItemId, quantity, note, optionChoiceIds }) => ({ menuItemId, quantity, note, optionChoiceIds })) };
+    const quote = (await json(origin, '/api/orders/quote', { method: 'POST', cookie, body: payload })).quote;
     const created = await json(origin, '/api/orders', {
-      method: 'POST', cookie, headers: { 'idempotency-key': `payment-smoke-${crypto.randomUUID()}` },
-      body: { merchantId, addressId: address.id, deliveryType: 'DELIVERY', items: [{ menuItemId: item.id, quantity: 1, optionChoiceIds: [choice.id] }] },
+      method: 'POST', cookie, headers: { 'idempotency-key': idempotencyKey },
+      body: payload,
     });
     orderId = created.order.id;
+    assert.equal(created.order.total_amount, quote.total_amount);
+    cart().clear();
+    assert.equal(cart().count, 0);
     assert.equal(created.order.payment_status, 'UNPAID');
+    if (promotionId) {
+      assert.ok(created.order.discount_amount > 0);
+      assert.equal(created.order.total_amount, created.order.subtotal_amount + created.order.delivery_fee - created.order.discount_amount);
+    }
+    if (phaseI) {
+      assert.ok(created.order.discount_amount > 0);
+      assert.equal(created.order.coupon_snapshot.code, 'WELCOME10');
+    }
     const attempt = await json(origin, `/api/orders/${orderId}/payments`, { method: 'POST', cookie, body: {} });
     assert.equal(attempt.payment.expected_amount, created.order.total_amount);
     const qr = await json(origin, `/api/orders/${orderId}/payment/qr`, { cookie });
@@ -104,12 +156,17 @@ async function main() {
     assert.ok(merchantList.orders.some((order) => order.id === orderId));
     await json(origin, `/api/merchant/orders/${orderId}/accept`, { method: 'POST', cookie: staffCookie, body: {} });
     const preparing = await json(origin, `/api/merchant/orders/${orderId}/start-preparing`, { method: 'POST', cookie: staffCookie, body: {} });
+    const kitchenLogin = await fetch(`${origin}/api/dev/merchant/auth/login`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: 'local_kitchen' }),
+    });
+    assert.equal(kitchenLogin.status, 200);
+    const kitchenCookie = kitchenLogin.headers.get('set-cookie').split(';')[0];
     for (const orderItem of preparing.order.items) {
       await json(origin, `/api/merchant/orders/${orderId}/items/${orderItem.id}`, {
-        method: 'PATCH', cookie: staffCookie, body: { completed: true },
+        method: 'PATCH', cookie: kitchenCookie, body: { completed: true },
       });
     }
-    const ready = await json(origin, `/api/merchant/orders/${orderId}/ready`, { method: 'POST', cookie: staffCookie, body: {} });
+    const ready = await json(origin, `/api/merchant/orders/${orderId}/ready`, { method: 'POST', cookie: kitchenCookie, body: {} });
     assert.equal(ready.order.status, 'READY');
     assert.equal(ready.order.payment_status, 'PAID');
     const riders = await json(origin, '/api/merchant/riders', { cookie: staffCookie });
@@ -137,7 +194,38 @@ async function main() {
     assert.ok(completed.order.completed_at);
     const customerCompleted = await json(origin, `/api/orders/${orderId}`, { cookie });
     assert.equal(customerCompleted.order.status, 'COMPLETED');
-    console.log('PASS local pipeline smoke: customer paid -> merchant READY/assign -> rider DELIVERING -> COMPLETED -> customer reflects status');
+    if (phaseI) {
+      const review = await json(origin, `/api/orders/${orderId}/review`, {
+        method: 'POST', cookie, body: { rating: 5, comment: 'Phase I fresh end-to-end scenario' },
+      });
+      phaseIReviewId = review.review.id;
+      const reorder = await json(origin, `/api/orders/${orderId}/reorder-preview`, { method: 'POST', cookie, body: {} });
+      assert.ok(reorder.available_items.length > 0);
+      const notifications = await json(origin, '/api/customer/notifications', { cookie });
+      assert.ok(notifications.items.some((item) => item.order_id === orderId));
+
+      const adminLogin = await fetch(`${origin}/api/admin/auth/login`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ username: 'local_super_admin', password: 'local-admin-only' }),
+      });
+      assert.equal(adminLogin.status, 200);
+      const adminLoginBody = await adminLogin.json();
+      const adminCookie = adminLogin.headers.getSetCookie().map((value) => value.split(';')[0]).join('; ');
+      assert.equal((await json(origin, `/api/admin/orders/${orderId}`, { cookie: adminCookie })).order.id, orderId);
+      const adminReviews = await json(origin, '/api/admin/reviews?status=PUBLISHED', { cookie: adminCookie });
+      assert.ok(adminReviews.items.some((item) => item.id === phaseIReviewId));
+      await json(origin, `/api/admin/reviews/${phaseIReviewId}`, {
+        method: 'PATCH', cookie: adminCookie, headers: { 'x-csrf-token': adminLoginBody.csrf_token }, body: { status: 'HIDDEN' },
+      });
+      await json(origin, `/api/admin/reviews/${phaseIReviewId}`, {
+        method: 'PATCH', cookie: adminCookie, headers: { 'x-csrf-token': adminLoginBody.csrf_token }, body: { status: 'PUBLISHED' },
+      });
+      const audit = await json(origin, '/api/admin/audit-logs?limit=50', { cookie: adminCookie });
+      assert.ok(audit.items.some((item) => item.entity_type === 'REVIEW' && Number(item.entity_id) === phaseIReviewId));
+    }
+    console.log(`PASS local pipeline smoke${promotionId ? ' with promotion' : ''}${phaseI ? ' Phase I engagement/Admin audit' : ''}: customer paid -> merchant READY/assign -> rider DELIVERING -> COMPLETED -> customer reflects status`);
+    console.log(JSON.stringify({ test_order_id: orderId, order_code: created.order.order_code,
+      flow: 'browse/menu -> actual client cart -> quote -> order -> mock PAID -> MANAGER accept/preparing -> KITCHEN complete/ready -> MANAGER assign -> RIDER delivering/completed -> customer COMPLETED' }));
   } finally {
     if (backend.exitCode === null) {
       const exited = once(backend, 'exit');
@@ -147,6 +235,9 @@ async function main() {
       clearTimeout(timer);
     }
     if (orderId) {
+      await db('audit_logs').where({ entity_type: 'REVIEW', entity_id: String(phaseIReviewId) }).delete();
+      await db('reviews').where({ order_id: orderId }).delete();
+      await db('customer_notifications').where({ order_id: orderId }).delete();
       const paymentIds = (await db('payments').where({ order_id: orderId }).select('id')).map((row) => row.id);
       if (paymentIds.length) {
         await db('payment_verifications').whereIn('payment_id', paymentIds).delete();
@@ -156,9 +247,22 @@ async function main() {
       const itemIds = (await db('order_items').where({ order_id: orderId }).select('id')).map((row) => row.id);
       if (itemIds.length) await db('order_item_choices').whereIn('order_item_id', itemIds).delete();
       await db('order_items').where({ order_id: orderId }).delete();
+      await db('coupon_redemptions').where({ order_id: orderId }).delete();
+      await db('promotion_redemptions').where({ order_id: orderId }).delete();
+      await db('notification_outbox').where({ order_id: orderId }).delete();
       await db('orders').where({ id: orderId }).delete();
     }
-    if (merchantId && baselineCounter !== undefined) await db('merchants').where({ id: merchantId }).update({ last_order_number: baselineCounter });
+    if (promotionId) await db('promotions').where({ id: promotionId }).delete();
+    if (couponId && couponBaselineUsage !== undefined) await db('coupons').where({ id: couponId }).update({ usage_count: couponBaselineUsage });
+    if (phaseIAdminId && phaseIAdminSessionBaseline !== undefined) {
+      await db('platform_admin_sessions').where({ admin_id: phaseIAdminId }).where('id', '>', phaseIAdminSessionBaseline).delete();
+    }
+    if (phaseI && !favoriteExisted && merchantId) {
+      const customer = await db('customers').where({ line_user_id: 'U_LOCAL_CUSTOMER_001' }).first('id');
+      await db('customer_favorite_merchants').where({ customer_id: customer.id, merchant_id: merchantId }).delete();
+    }
+    await db('idempotency_keys').where({ idempotency_key: idempotencyKey }).delete();
+    if (merchantId && baselineCounter !== undefined) await db('merchants').where({ id: merchantId, last_order_number: baselineCounter + 1 }).update({ last_order_number: baselineCounter });
     await db.destroy();
     await fs.rm(storageRoot, { recursive: true, force: true });
   }

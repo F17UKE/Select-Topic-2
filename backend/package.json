@@ -9,11 +9,14 @@
     "db:check": "node scripts/check-db.cjs",
     "db:migrate": "knex --knexfile knexfile.cjs migrate:latest",
     "db:status": "knex --knexfile knexfile.cjs migrate:list",
+    "db:preflight-production": "node scripts/preflight-production-db.cjs",
     "db:seed": "knex --knexfile knexfile.cjs seed:run",
     "db:verify-local": "node scripts/verify-local-db.cjs",
     "db:rollback": "knex --knexfile knexfile.cjs migrate:rollback",
     "checkslip:manual": "node scripts/manual-checkslip.cjs",
-    "storage:test-object": "node scripts/test-object-storage.cjs"
+    "payment:test-easyslip": "node scripts/manual-easyslip.cjs",
+    "storage:test-object": "node scripts/test-object-storage.cjs",
+    "finance:scheduled": "node scripts/finance-scheduled.cjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1145.0",

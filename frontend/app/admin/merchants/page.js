@@ -1,0 +1,3 @@
+'use client';
+import { AdminResourcePage } from '../../../components/admin-resource-page';
+export default function Page() { return <AdminResourcePage title="ร้านค้า" description="สถานะร้าน บุคลากร เมนู และยอดออเดอร์" endpoint="/api/admin/merchants" detailBase="/admin/merchants" extraFilters={[{key:'sort',label:'เรียงตาม',options:['name','oldest']}]}  filters={['open','closed','active','suspended']} columns={[{key:'store_name',label:'ร้านค้า'},{key:'phone',label:'โทรศัพท์'},{key:'is_active',label:'สถานะ'},{key:'is_open',label:'เปิดร้าน'},{key:'staff_count',label:'พนักงาน',numeric:true},{key:'menu_count',label:'เมนู',numeric:true},{key:'orders_today',label:'วันนี้',numeric:true}]} />; }

@@ -1,4 +1,8 @@
+const {openingStatus}=require('./opening-hours.cjs');
 const { HttpError, textField } = require('./http.cjs');
+const { createPromotionService } = require('./promotion-service.cjs');
+const { createCouponService, normalizeCouponCode } = require('./coupon-service.cjs');
+const { createFinanceService } = require('./finance-service.cjs');
 
 const toCents = (value) => Math.round(Number(value) * 100);
 const money = (cents) => (cents / 100).toFixed(2);
@@ -47,8 +51,13 @@ function normalizePayload(payload) {
       optionChoiceIds: normalizedChoices,
     };
   });
+  const promotionId = payload.promotionId == null ? null : positiveInteger(payload.promotionId, 'promotionId');
+  const couponCode = payload.couponCode == null || payload.couponCode === '' ? null : normalizeCouponCode(payload.couponCode);
+  if (promotionId && couponCode) throw new HttpError(400, 'discount_stacking_not_allowed', 'เลือกโปรโมชันหรือคูปองได้อย่างใดอย่างหนึ่ง');
   return {
     merchantId,
+    promotionId,
+    couponCode,
     addressId,
     deliveryType,
     deliveryNote: textField(payload.deliveryNote, 'deliveryNote', { max: 1000, nullable: true }),
@@ -57,6 +66,9 @@ function normalizePayload(payload) {
 }
 
 function createOrderService(db, { beforeCommit } = {}) {
+  const finance = createFinanceService(db);
+  const promotions = createPromotionService(db);
+  const coupons = createCouponService(db);
   async function getOrder(customerId, orderId, query = db) {
     const order = await query('orders as o')
       .join('merchants as m', 'm.id', 'o.merchant_id')
@@ -64,6 +76,7 @@ function createOrderService(db, { beforeCommit } = {}) {
         'o.id', 'o.order_code', 'o.merchant_order_number', 'o.customer_id', 'o.merchant_id',
         'm.store_name', 'o.delivery_type', 'o.status', 'o.payment_method', 'o.payment_status',
         'o.subtotal_amount', 'o.delivery_fee', 'o.total_amount', 'o.delivery_address_label',
+        'o.promotion_id', 'o.promotion_snapshot', 'o.coupon_id', 'o.coupon_snapshot', 'o.discount_amount',
         'o.delivery_soi_name', 'o.delivery_dormitory_name', 'o.delivery_location_text',
         'o.delivery_room_number', 'o.delivery_contact_phone', 'o.delivery_note',
         'o.accepted_at', 'o.delivering_at', 'o.completed_at', 'o.cancelled_at', 'o.created_at', 'o.updated_at',
@@ -80,6 +93,7 @@ function createOrderService(db, { beforeCommit } = {}) {
     return {
       ...order,
       subtotal_amount: moneyNumber(order.subtotal_amount),
+      discount_amount: moneyNumber(order.discount_amount),
       delivery_fee: moneyNumber(order.delivery_fee),
       total_amount: moneyNumber(order.total_amount),
       items: items.map((item) => {
@@ -114,14 +128,16 @@ function createOrderService(db, { beforeCommit } = {}) {
     });
   }
 
-  async function createOrder(customerId, rawPayload, { transaction } = {}) {
+  async function createOrder(customerId, rawPayload, { transaction, quoteOnly = false } = {}) {
     const payload = normalizePayload(rawPayload);
     const createWithin = async (trx) => {
+      await finance.runtime(trx, true);
       const merchant = await trx('merchants')
-        .select('id', 'store_name', 'prefix', 'last_order_number', 'is_open')
+        .select('id', 'store_name', 'prefix', 'last_order_number', 'is_open', 'is_active')
         .where({ id: payload.merchantId }).whereNull('deleted_at').forUpdate().first();
       if (!merchant) throw new HttpError(404, 'merchant_not_found');
-      if (!merchant.is_open) throw new HttpError(409, 'merchant_closed', 'This merchant is currently closed');
+      if (!merchant.is_active) throw new HttpError(409, 'merchant_suspended', 'This merchant is temporarily unavailable');
+      if (openingStatus(merchant,await trx('merchant_opening_hours').where({merchant_id:merchant.id})) !== 'OPEN') throw new HttpError(409, 'merchant_closed', 'This merchant is currently closed');
 
       let address = null;
       let deliveryFeeCents = 0;
@@ -203,6 +219,25 @@ function createOrderService(db, { beforeCommit } = {}) {
         return { requested, menuItem, selectedChoices, baseCents };
       });
 
+      if (!Number.isSafeInteger(subtotalCents) || subtotalCents > 999999999999) throw new HttpError(422, 'order_amount_too_large');
+      const promotion = await promotions.resolve(trx, payload.promotionId, {
+        merchantId: merchant.id, subtotal: subtotalCents, deliveryFee: deliveryFeeCents, deliveryType: payload.deliveryType,
+      });
+      const coupon = await coupons.resolve(trx, payload.couponCode, {
+        customerId, merchantId: merchant.id, subtotal: subtotalCents,
+        deliveryFee: deliveryFeeCents, deliveryType: payload.deliveryType,
+      });
+      const discount = promotion.discount + coupon.discount;
+      const totalCents = subtotalCents + deliveryFeeCents - discount;
+      const financeRoute = await finance.route(trx, { subtotal_amount: money(subtotalCents), delivery_fee: money(deliveryFeeCents),
+        discount_amount: money(discount), total_amount: money(totalCents), promotion_snapshot: promotion.snapshot, coupon_snapshot: coupon.snapshot });
+      if (!Number.isSafeInteger(totalCents) || totalCents > 999999999999) throw new HttpError(422, 'order_amount_too_large');
+      if (quoteOnly) return {
+        subtotal_amount: Number(money(subtotalCents)), delivery_fee: Number(money(deliveryFeeCents)),
+        discount_amount: Number(money(discount)), total_amount: Number(money(totalCents)),
+        promotion_snapshot: promotion.snapshot,
+        coupon_snapshot: coupon.snapshot,
+      };
       const merchantOrderNumber = merchant.last_order_number + 1;
       await trx('merchants').where({ id: merchant.id }).update({
         last_order_number: merchantOrderNumber,
@@ -210,6 +245,7 @@ function createOrderService(db, { beforeCommit } = {}) {
       });
       const orderCode = `${merchant.prefix}-${String(merchantOrderNumber).padStart(6, '0')}`;
       const [order] = await trx('orders').insert({
+        ...financeRoute,
         order_code: orderCode,
         merchant_order_number: merchantOrderNumber,
         customer_id: customerId,
@@ -222,7 +258,12 @@ function createOrderService(db, { beforeCommit } = {}) {
         payment_status: 'UNPAID',
         subtotal_amount: money(subtotalCents),
         delivery_fee: money(deliveryFeeCents),
-        total_amount: money(subtotalCents + deliveryFeeCents),
+        total_amount: money(totalCents),
+        promotion_id: payload.promotionId,
+        promotion_snapshot: promotion.snapshot ? JSON.stringify(promotion.snapshot) : null,
+        coupon_id: coupon.coupon?.id ?? null,
+        coupon_snapshot: coupon.snapshot ? JSON.stringify(coupon.snapshot) : null,
+        discount_amount: money(discount),
         delivery_address_label: address?.label ?? null,
         delivery_soi_name: address?.soi_name ?? null,
         delivery_dormitory_name: address?.dormitory_name ?? null,
@@ -254,13 +295,15 @@ function createOrderService(db, { beforeCommit } = {}) {
           })));
         }
       }
+      await promotions.redeem(trx, { promotionId: payload.promotionId, orderId: order.id, customerId, discount: promotion.discount });
+      await coupons.redeem(trx, { coupon: coupon.coupon, orderId: order.id, customerId, discount: coupon.discount });
       if (beforeCommit) await beforeCommit({ trx, orderId: order.id, merchantId: merchant.id });
       return getOrder(customerId, order.id, trx);
     };
     return transaction ? createWithin(transaction) : db.transaction(createWithin);
   }
 
-  return { createOrder, listOrders, getOrder };
+  return { createOrder, quoteOrder: (customerId, payload) => createOrder(customerId, payload, { quoteOnly: true }), listOrders, getOrder, promotions, coupons };
 }
 
 module.exports = { createOrderService, normalizePayload };

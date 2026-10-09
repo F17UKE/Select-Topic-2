@@ -1,6 +1,7 @@
 const crypto = require('node:crypto');
 const bcrypt = require('bcryptjs');
 const { HttpError } = require('./http.cjs');
+const { SESSION_SECONDS, sessionExpired } = require('./session-lifetime.cjs');
 
 const SESSION_COOKIE = 'merchant_staff_session';
 
@@ -32,12 +33,15 @@ function readCookie(header, name) {
   if (!header) return null;
   for (const part of header.split(';')) {
     const [key, ...value] = part.trim().split('=');
-    if (key === name) return decodeURIComponent(value.join('='));
+    if (key === name) {
+      try { return decodeURIComponent(value.join('=')); }
+      catch { return null; }
+    }
   }
   return null;
 }
 
-function createMerchantStaffAuth({ db, config = merchantStaffAuthConfig(), randomUUID = crypto.randomUUID }) {
+function createMerchantStaffAuth({ db, config = merchantStaffAuthConfig(), randomUUID = crypto.randomUUID, now = Date.now }) {
   const sessions = new Map();
   const attempts = new Map();
   const dummyHash = '$2b$12$8VlPofArSwOWg.7ZeDjxeOvlNfIzZHQ53hjrO40ARvU2zJpMUshwq';
@@ -75,7 +79,7 @@ function createMerchantStaffAuth({ db, config = merchantStaffAuthConfig(), rando
     const staff = await findStaff(username);
     if (!staff) throw new HttpError(404, 'dev_staff_missing', 'Run the local seed before using staff dev login');
     const token = randomUUID();
-    sessions.set(token, { staffId: staff.id, createdAt: Date.now() });
+    sessions.set(token, { staffId: staff.id, createdAt: now() });
     return { token, staff: publicStaff(staff) };
   }
 
@@ -92,14 +96,17 @@ function createMerchantStaffAuth({ db, config = merchantStaffAuthConfig(), rando
     attempts.delete(key);
     if (currentToken) sessions.delete(currentToken);
     const token = randomUUID();
-    sessions.set(token, { staffId: staff.id, createdAt: Date.now() });
+    sessions.set(token, { staffId: staff.id, createdAt: now() });
     return { token, staff: publicStaff(staff) };
   }
 
   async function authenticate(req) {
     const token = readCookie(req.get('cookie'), SESSION_COOKIE);
     const session = token ? sessions.get(token) : null;
-    if (!session) throw new HttpError(401, 'staff_authentication_required');
+    if (!session || sessionExpired(session, now())) {
+      if (token) sessions.delete(token);
+      throw new HttpError(401, 'staff_authentication_required');
+    }
     const staff = await db('merchant_staffs as s')
       .join('merchants as m', 'm.id', 's.merchant_id')
       .select('s.id', 's.merchant_id', 's.username', 's.full_name', 's.phone', 's.role', 'm.store_name')
@@ -116,14 +123,15 @@ function createMerchantStaffAuth({ db, config = merchantStaffAuthConfig(), rando
   function sessionToken(req) { return readCookie(req.get('cookie'), SESSION_COOKIE); }
   function cookie(token) {
     const secure = config.secureCookie ? '; Secure' : '';
-    return `${SESSION_COOKIE}=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=28800${secure}`;
+    return `${SESSION_COOKIE}=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_SECONDS}${secure}`;
   }
   function clearCookie() {
     const secure = config.secureCookie ? '; Secure' : '';
     return `${SESSION_COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${secure}`;
   }
 
-  return { config, loginDevelopmentStaff, loginPassword, authenticate, logout, sessionToken, cookie, clearCookie };
+  function revokeStaff(id) { for(const [token,session] of sessions) if(Number(session.staffId)===Number(id)) sessions.delete(token); }
+  return { revokeStaff, config, loginDevelopmentStaff, loginPassword, authenticate, logout, sessionToken, cookie, clearCookie };
 }
 
 module.exports = { merchantStaffAuthConfig, createMerchantStaffAuth };

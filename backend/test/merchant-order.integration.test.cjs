@@ -96,6 +96,12 @@ test('merchant dashboard state machine, tenant isolation, role permissions and K
       assert.ok(list.body.orders.some((order) => order.id === own.id));
       assert.ok(!list.body.orders.some((order) => order.id === foreign.id));
       await manager.get(`/api/merchant/orders/${foreign.id}`).expect(404);
+      for (const agent of [cashier, kitchen]) {
+        const scoped = await agent.get('/api/merchant/orders').expect(200);
+        assert.ok(!scoped.body.orders.some((order) => order.id === foreign.id));
+        await agent.get(`/api/merchant/orders/${foreign.id}`).expect(404);
+        await agent.post(`/api/merchant/orders/${foreign.id}/start-preparing`).expect(agent === cashier ? 404 : 403);
+      }
       const kitchenList = await kitchen.get('/api/merchant/orders').expect(200);
       const kitchenOrder = kitchenList.body.orders.find((order) => order.id === own.id);
       assert.ok(kitchenOrder);

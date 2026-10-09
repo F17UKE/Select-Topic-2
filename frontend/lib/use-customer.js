@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { customerErrorMessage } from './customer-error.mjs';
 import { api, ApiError } from './api';
 import { getLiffIdToken } from './liff-auth';
 
@@ -30,7 +31,7 @@ export function useCustomer() {
       setAuthConfig(config);
       setCustomer(session?.customer || null);
     } catch (requestError) {
-      setError(requestError.message);
+      setError(customerErrorMessage(requestError));
     } finally {
       setLoading(false);
     }
@@ -45,7 +46,7 @@ export function useCustomer() {
       setLoading(false);
     }).catch((requestError) => {
       if (!active) return;
-      setError(requestError.message);
+      setError(customerErrorMessage(requestError));
       setLoading(false);
     });
     return () => { active = false; };
@@ -65,7 +66,7 @@ export function useCustomer() {
       }
       setCustomer(result.customer);
     } catch (requestError) {
-      setError(requestError.message);
+      setError(customerErrorMessage(requestError));
     } finally {
       setLoading(false);
     }

@@ -2,24 +2,39 @@
   "name": "select-topic-2",
   "version": "0.1.0",
   "private": true,
-  "workspaces": ["frontend", "backend"],
-  "engines": { "node": ">=22.19.0 <23 || >=24 <25" },
+  "workspaces": [
+    "frontend",
+    "backend"
+  ],
+  "engines": {
+    "node": ">=22.19.0 <23 || >=24 <25"
+  },
   "scripts": {
+    "start-db": "powershell -NoProfile -File scripts/local-db.ps1 start",
+    "stop-db": "powershell -NoProfile -File scripts/local-db.ps1 stop",
+    "status-db": "powershell -NoProfile -File scripts/local-db.ps1 status",
     "dev:frontend": "npm run dev --workspace frontend",
     "dev:backend": "npm run dev --workspace backend",
     "db:local:up": "docker compose --env-file deploy/local/.env -f deploy/local/compose.yml up -d --wait",
     "db:local:down": "docker compose --env-file deploy/local/.env -f deploy/local/compose.yml down",
-    "lint": "eslint backend deploy scripts && npm run lint --workspace frontend",
+    "lint": "eslint backend scripts && npm run lint --workspace frontend",
     "build": "npm run build --workspace frontend",
     "test": "npm run test --workspace backend && node --test scripts/*.test.cjs",
     "test:smoke": "node scripts/smoke.cjs",
-    "test:smoke:local": "node scripts/customer-browsing-smoke.cjs && node scripts/payment-smoke.cjs",
-    "verify": "npm run lint && npm test && npm run build"
+    "test:smoke:local": "node scripts/customer-browsing-smoke.cjs && node scripts/payment-smoke.cjs && node scripts/payment-smoke.cjs --promotion && node scripts/admin-smoke.cjs",
+    "test:smoke:admin": "node scripts/admin-smoke.cjs",
+    "verify": "npm run lint && npm test && npm run build",
+    "test:smoke:merchant-management": "node --test backend/test/merchant-management.integration.test.cjs",
+    "test:smoke:customer-engagement": "node --test --test-concurrency=1 backend/test/phase-h.integration.test.cjs",
+    "test:smoke:final": "node scripts/payment-smoke.cjs --phase-i",
+    "security:scan": "node scripts/secret-scan.cjs"
   },
-  "dependencies": { "pm2": "7.0.4" },
   "overrides": {
-    "js-yaml": "4.3.2",
-    "get-uri": { "basic-ftp": "6.2.1" }
+    "js-yaml": "4.3.2"
   },
-  "devDependencies": { "@eslint/js": "9.39.5", "eslint": "9.39.5", "globals": "17.13.0" }
+  "devDependencies": {
+    "@eslint/js": "9.39.5",
+    "eslint": "9.39.5",
+    "globals": "17.13.0"
+  }
 }

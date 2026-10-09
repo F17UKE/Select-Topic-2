@@ -2,12 +2,19 @@ require('../src/env.cjs');
 const { createDatabase } = require('../src/database.cjs');
 
 const expectedTables = [
-  'sois', 'dormitories', 'customers', 'customer_addresses', 'merchants',
+  'merchant_opening_hours', 'sois', 'dormitories', 'customers', 'customer_addresses', 'merchants',
   'merchant_images', 'merchant_staffs', 'delivery_fees', 'menu_categories',
   'menu_items', 'menu_option_groups', 'menu_option_choices', 'orders', 'order_items',
   'order_item_choices', 'payments', 'payment_slips', 'payment_verifications',
   'order_messages', 'order_chat_read_states',
   'idempotency_keys', 'line_webhook_events', 'notification_outbox',
+  'promotion_redemptions', 'platform_admins', 'platform_admin_sessions', 'audit_logs', 'banners',
+  'promotions', 'system_settings',
+  'reviews', 'customer_favorite_merchants', 'coupons', 'coupon_redemptions',
+  'customer_notifications', 'integration_settings',
+  'finance_policy_versions', 'platform_payment_recipients', 'order_financial_snapshots', 'financial_accounts',
+  'financial_transactions', 'financial_postings', 'merchant_payout_accounts', 'merchant_withdrawals',
+  'finance_refunds', 'finance_transfers', 'advertising_orders', 'finance_reconciliation_cases',
 ];
 
 async function main() {
@@ -41,6 +48,7 @@ async function main() {
       menu_items: Number((await db('menu_items').count('* as count').first()).count),
       menu_option_groups: Number((await db('menu_option_groups').count('* as count').first()).count),
       menu_option_choices: Number((await db('menu_option_choices').count('* as count').first()).count),
+      platform_admins: Number((await db('platform_admins').count('* as count').first()).count),
     };
     if (Object.values(seed).some((count) => count < 1)) throw new Error('Local seed data is incomplete.');
     console.log(JSON.stringify({

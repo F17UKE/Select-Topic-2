@@ -9,7 +9,7 @@ function createMockProvider({ randomUUID = crypto.randomUUID } = {}) {
   return {
     name: 'mock-checkslip',
     async verify({ expectedAmount, expectedRecipient, fileHash, scenario = 'success', transactionReference }) {
-      if (!['success', 'amount_mismatch', 'recipient_mismatch', 'duplicate_reference', 'provider_error'].includes(scenario)) {
+      if (!['success', 'amount_mismatch', 'recipient_mismatch', 'duplicate_reference', 'provider_error', 'invalid_slip'].includes(scenario)) {
         throw new VerificationProviderError('invalid_mock_scenario', { retryable: false });
       }
       if (scenario === 'provider_error') throw new VerificationProviderError('mock_provider_error');
@@ -21,9 +21,9 @@ function createMockProvider({ randomUUID = crypto.randomUUID } = {}) {
         ? 'MOCK-DUPLICATE-REFERENCE'
         : reference;
       return {
-        status: 'VERIFIED', provider: 'mock-checkslip', providerRequestId,
+        status: scenario === 'invalid_slip' ? 'REJECTED' : 'VERIFIED', provider: 'mock-checkslip', providerRequestId,
         transactionReference: normalizedReference, amount,
-        recipient: { type: null, value: recipientValue }, failureCode: null,
+        recipient: { type: null, value: recipientValue }, failureCode: scenario === 'invalid_slip' ? 'INVALID_SLIP' : null,
         rawRedacted: {
           provider: 'mock-checkslip', status: 'VERIFIED', outcome: scenario,
           request_id: providerRequestId, transaction_reference: normalizedReference,

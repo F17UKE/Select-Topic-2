@@ -1,193 +1,407 @@
-'use client';
+"use client";
 
-import Image from 'next/image';
-import { useParams } from 'next/navigation';
-import { useEffect, useState } from 'react';
-import { AppShell, LoadingCards, SignInCard } from '../../../components/app-shell';
-import { CustomerDetailHeader } from '../../../components/customer/detail-header';
-import { Icon } from '../../../components/icons';
-import { api, ApiError, baht } from '../../../lib/api';
-import { maskPaymentIdentifier, orderStatusLabel, paymentStatusClass, paymentStatusLabel, statusClass } from '../../../lib/order-presentation.mjs';
-import { useCustomer } from '../../../lib/use-customer';
+import Link from "next/link";
+import { OrderSnapshotChoices } from "../../../components/customer/order-snapshot-choice";
+import { useParams, useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
+import { customerErrorMessage } from '../../../lib/customer-error.mjs';
+import {
+  AppShell,
+  LoadingCards,
+  SignInCard,
+} from "../../../components/app-shell";
+import { CustomerDetailHeader } from "../../../components/customer/detail-header";
+import { Icon } from "../../../components/icons";
+import { api, baht } from "../../../lib/api";
+import {
+  orderStatusLabel,
+  paymentStatusClass,
+  paymentStatusLabel,
+  statusClass,
+} from "../../../lib/order-presentation.mjs";
+import { useCustomer } from "../../../lib/use-customer";
+import { useCart } from "../../../lib/cart";
+import { orderPaymentPresentation } from "../../../lib/payment-presentation.mjs";
 
-const steps = ['PENDING', 'ACCEPTED', 'PREPARING', 'READY', 'DELIVERING', 'COMPLETED'];
-const paymentMessages = {
-  AMOUNT_MISMATCH: 'ยอดโอนในสลิปไม่ตรงกับยอดออเดอร์',
-  RECIPIENT_MISMATCH: 'บัญชีผู้รับในสลิปไม่ตรงกับร้านค้า',
-  DUPLICATE_TRANSACTION_REFERENCE: 'สลิปนี้ถูกใช้ชำระออเดอร์อื่นแล้ว',
-  mock_provider_error: 'ผู้ให้บริการตรวจสลิปขัดข้อง กรุณาลองใหม่',
-  checkslip_not_configured: 'ระบบตรวจสลิปยังไม่พร้อมใช้งาน',
-};
+const steps = [
+  "PENDING",
+  "ACCEPTED",
+  "PREPARING",
+  "READY",
+  "DELIVERING",
+  "COMPLETED",
+];
 
 export default function OrderDetailPage() {
   const { id } = useParams();
+  const router = useRouter();
   const session = useCustomer();
+  const cart = useCart();
   const [order, setOrder] = useState(null);
-  const [paymentResult, setPaymentResult] = useState(null);
-  const [qr, setQr] = useState(null);
-  const [file, setFile] = useState(null);
-  const [mockScenario, setMockScenario] = useState('success');
-  const [paymentAction, setPaymentAction] = useState('');
-  const [error, setError] = useState('');
-  const [paymentError, setPaymentError] = useState('');
-
-  async function loadOrder() {
-    const result = await api(`/api/orders/${id}`);
-    setOrder(result.order);
-    return result.order;
-  }
-
-  async function preparePayment(currentOrder) {
-    if (currentOrder.payment_method !== 'PROMPTPAY') return;
-    setPaymentAction('loading');
-    try {
-      let current;
-      try {
-        current = await api(`/api/orders/${id}/payment`);
-      } catch (requestError) {
-        if (!(requestError instanceof ApiError) || requestError.status !== 404) throw requestError;
-        if (currentOrder.payment_status === 'PAID') throw requestError;
-        current = await api(`/api/orders/${id}/payments`, { method: 'POST', body: JSON.stringify({}) });
-      }
-      setPaymentResult(current);
-      if (current.payment.status !== 'FAILED' && current.payment.status !== 'PAID') {
-        setQr((await api(`/api/orders/${id}/payment/qr`)).qr);
-      }
-    } catch (requestError) {
-      setPaymentError(requestError.message);
-    } finally {
-      setPaymentAction('');
-    }
-  }
+  const [payment, setPayment] = useState(null);
+  const [error, setError] = useState("");
+  const [reviewInfo, setReviewInfo] = useState({
+    review: null,
+    eligible: false,
+  });
+  const [rating, setRating] = useState(5);
+  const [reviewComment, setReviewComment] = useState("");
+  const [engagementBusy, setEngagementBusy] = useState(false);
+  const [reorderResult, setReorderResult] = useState(null);
+  const [engagementError, setEngagementError] = useState("");
 
   useEffect(() => {
     if (!session.customer) return;
     let active = true;
-    api(`/api/orders/${id}`).then(async (result) => {
-      if (!active) return;
-      setOrder(result.order);
-      await preparePayment(result.order);
-    }).catch((requestError) => { if (active) setError(requestError.message); });
-    return () => { active = false; };
-    // preparePayment is intentionally scoped to this page load.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    api(`/api/orders/${id}`)
+      .then(async (result) => {
+        if (!active) return;
+        setOrder(result.order);
+        if (result.order.payment_method === "PROMPTPAY" && result.order.payment_status !== "PAID") {
+          try {
+            const paymentResult = await api(`/api/orders/${id}/payment`);
+            if (active) setPayment(paymentResult.payment);
+          } catch { /* Order detail remains available if the read-only payment view is temporarily unavailable. */ }
+        }
+        if (result.order.status === "COMPLETED")
+          setReviewInfo(await api(`/api/orders/${id}/review`));
+      })
+      .catch((requestError) => {
+        if (active) setError(customerErrorMessage(requestError));
+      });
+    return () => {
+      active = false;
+    };
   }, [id, session.customer]);
 
-  async function retryPayment() {
-    setPaymentAction('loading');
-    setPaymentError('');
-    try {
-      const result = await api(`/api/orders/${id}/payments`, { method: 'POST', body: JSON.stringify({}) });
-      setPaymentResult(result);
-      setQr((await api(`/api/orders/${id}/payment/qr`)).qr);
-      await loadOrder();
-    } catch (requestError) {
-      setPaymentError(requestError.message);
-    } finally {
-      setPaymentAction('');
-    }
-  }
-
-  async function uploadSlip(event) {
+  async function submitReview(event) {
     event.preventDefault();
-    if (!file) return setPaymentError('กรุณาเลือกรูปสลิป');
-    setPaymentAction('uploading');
-    setPaymentError('');
-    const form = new FormData();
-    form.append('slip', file);
-    if (paymentResult?.verification_mode === 'mock') form.append('mockScenario', mockScenario);
+    setEngagementBusy(true);
+    setEngagementError("");
     try {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      setPaymentAction('verifying');
-      const result = await api(`/api/orders/${id}/payment/slip`, { method: 'POST', body: form });
-      setPaymentResult(result);
-      setOrder((await api(`/api/orders/${id}`)).order);
-      if (result.payment.status === 'PAID') setQr(null);
+      const result = await api(`/api/orders/${id}/review`, {
+        method: "POST",
+        body: JSON.stringify({ rating, comment: reviewComment }),
+      });
+      setReviewInfo({ review: result.review, eligible: false });
     } catch (requestError) {
-      setPaymentError(requestError.message);
+      setEngagementError(customerErrorMessage(requestError));
     } finally {
-      setPaymentAction('');
+      setEngagementBusy(false);
     }
   }
 
-  const detailHeader = <CustomerDetailHeader title={order?.order_code || 'รายละเอียดออเดอร์'} backHref="/orders" />;
+  async function previewReorder() {
+    setEngagementBusy(true);
+    setEngagementError("");
+    try {
+      const result = await api(`/api/orders/${id}/reorder-preview`, {
+        method: "POST",
+      });
+      setReorderResult(result);
+      if (!result.unavailable_items.length && result.available_items.length) {
+        cart.replace({
+          merchantId: result.merchant_id,
+          merchantName: result.merchant_name,
+          items: result.available_items,
+        });
+        router.push("/cart");
+      }
+    } catch (requestError) {
+      setEngagementError(customerErrorMessage(requestError));
+    } finally {
+      setEngagementBusy(false);
+    }
+  }
+
+  function continueAvailableReorder() {
+    if (!reorderResult?.available_items.length) return;
+    cart.replace({
+      merchantId: reorderResult.merchant_id,
+      merchantName: reorderResult.merchant_name,
+      items: reorderResult.available_items,
+    });
+    router.push("/cart");
+  }
+
+  const detailHeader = (
+    <CustomerDetailHeader
+      title={order?.order_code || "รายละเอียดออเดอร์"}
+      backHref="/orders"
+    />
+  );
   if (session.loading || (session.customer && !order && !error)) {
-    return <AppShell variant="order-detail" header={detailHeader}><LoadingCards /></AppShell>;
+    return (
+      <AppShell variant="order-detail" header={detailHeader}>
+        <LoadingCards />
+      </AppShell>
+    );
   }
   if (!session.customer) {
-    return <AppShell variant="order-detail" header={detailHeader}><SignInCard config={session.authConfig} loading={session.loading} error={session.error} onLogin={session.devLogin} /></AppShell>;
+    return (
+      <AppShell variant="order-detail" header={detailHeader}>
+        <SignInCard
+          config={session.authConfig}
+          loading={session.loading}
+          error={session.error}
+          onLogin={session.devLogin}
+        />
+      </AppShell>
+    );
   }
   if (error) {
-    return <AppShell variant="order-detail" header={detailHeader}><section className="empty-state"><h1>ไม่พบออเดอร์นี้</h1><p>{error}</p></section></AppShell>;
+    return (
+      <AppShell variant="order-detail" header={detailHeader}>
+        <section className="empty-state">
+          <h1>ไม่พบออเดอร์นี้</h1>
+          <p>{error}</p>
+        </section>
+      </AppShell>
+    );
   }
 
   const activeIndex = steps.indexOf(order.status);
-  const terminal = ['CANCELLED', 'REJECTED'].includes(order.status);
-  const payment = paymentResult?.payment;
-  const verificationFailure = payment?.verification?.failure_code;
-  const paid = order.payment_status === 'PAID' || payment?.status === 'PAID';
-  const visiblePaymentStatus = paid
-    ? 'PAID'
-    : ['uploading', 'verifying'].includes(paymentAction)
-      ? 'PROCESSING'
-      : order.payment_status;
-  const showMockTools = process.env.NODE_ENV !== 'production' && paymentResult?.verification_mode === 'mock';
+  const terminal = ["CANCELLED", "REJECTED"].includes(order.status);
+  const paymentView = orderPaymentPresentation(order, payment);
+  const { paid, processing: reconciling, status: visiblePaymentStatus } = paymentView;
 
   return (
     <AppShell variant="order-detail" header={detailHeader}>
       <section className="order-summary-card">
-        <div className="order-summary-heading"><div><h1>{order.store_name}</h1><p>{order.order_code}</p></div><span className={`order-status ${statusClass(order.status)}`}>{orderStatusLabel(order.status)}</span></div>
-        <div className="order-payment-state"><span>สถานะการชำระเงิน</span><strong className={`payment-status ${paymentStatusClass(visiblePaymentStatus)}`}>{paymentStatusLabel(visiblePaymentStatus)}</strong></div>
+        <div className="order-summary-heading">
+          <div>
+            <h1>{order.store_name}</h1>
+            <p>{order.order_code}</p>
+          </div>
+          <span className={`order-status ${statusClass(order.status)}`}>
+            {orderStatusLabel(order.status)}
+          </span>
+        </div>
+        <div className="order-payment-state">
+          <span>สถานะการชำระเงิน</span>
+          <strong
+            className={`payment-status ${paymentStatusClass(visiblePaymentStatus)}`}
+          >
+            {paymentStatusLabel(visiblePaymentStatus)}
+          </strong>
+        </div>
       </section>
 
-      {order.payment_method === 'PROMPTPAY' && !terminal && (
-        <section className={`payment-card ${paid ? 'paid' : ''}`} aria-live="polite">
-          <div className="payment-heading">
-            <div><p>ชำระเงิน</p><h2>{paid ? 'ชำระเงินเรียบร้อย' : 'ยอดที่ต้องชำระ'}</h2></div>
-            <span className="payment-mark"><Icon name={paid ? 'check' : 'receipt'} /></span>
-          </div>
-          {paid ? (
-            <div className="payment-success"><strong>{baht(order.total_amount)}</strong><p>ระบบตรวจสอบการชำระเงินเรียบร้อยแล้ว</p></div>
-          ) : payment?.status === 'FAILED' ? (
-            <div className="payment-failed">
-              <strong>{payment?.verification_status === 'ERROR' ? 'ตรวจสลิปไม่สำเร็จ' : 'สลิปไม่ผ่านการตรวจสอบ'}</strong>
-              <p>{paymentMessages[verificationFailure] || verificationFailure || 'กรุณาลองชำระอีกครั้ง'}</p>
-              <button className="primary-button" type="button" onClick={retryPayment} disabled={Boolean(paymentAction)}>สร้างรายการชำระใหม่</button>
-            </div>
-          ) : (
-            <>
-              <div className="payment-amount-row"><span>PromptPay</span><strong>{baht(order.total_amount)}</strong></div>
-              {qr && <div className="promptpay-qr"><Image src={qr.image_data_url} alt={`PromptPay QR สำหรับ ${qr.merchant.store_name}`} width={280} height={280} unoptimized /><p>{qr.merchant.store_name}</p><small>{maskPaymentIdentifier(qr.merchant.promptpay_identifier)}</small><strong>{baht(qr.amount)}</strong></div>}
-              {paymentAction === 'loading' && <p className="payment-progress">กำลังเตรียม QR สำหรับชำระเงิน…</p>}
-              <form className="slip-form" onSubmit={uploadSlip}>
-                <span className="slip-form-title">อัปโหลดสลิป</span>
-                <input className="slip-file-input" id={`slip-file-${id}`} type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => setFile(event.target.files?.[0] || null)} disabled={Boolean(paymentAction)} />
-                <label className="slip-file-picker" htmlFor={`slip-file-${id}`}><Icon name="upload" size={19} /><span>{file ? file.name : 'เลือกรูปสลิป'}</span></label>
-                <small>รองรับ PNG, JPEG และ WebP ขนาดไม่เกิน 5 MB</small>
-                {showMockTools && <label className="mock-scenario"><span>Developer tool · Local mock scenario</span>
-                  <select value={mockScenario} onChange={(event) => setMockScenario(event.target.value)} disabled={Boolean(paymentAction)}>
-                    <option value="success">Success</option><option value="amount_mismatch">Amount mismatch</option>
-                    <option value="recipient_mismatch">Recipient mismatch</option><option value="duplicate_reference">Duplicate reference</option>
-                    <option value="provider_error">Provider error</option>
-                  </select>
-                </label>}
-                <button className="primary-button" type="submit" disabled={!file || Boolean(paymentAction)}>
-                  {paymentAction === 'uploading' ? 'กำลังอัปโหลด…' : paymentAction === 'verifying' ? 'กำลังตรวจสอบสลิป…' : 'อัปโหลดและตรวจสอบ'}
-                </button>
-              </form>
-            </>
-          )}
-          {paymentError && <p className="form-error">{paymentError}</p>}
+      {order.payment_method === "PROMPTPAY" && (
+        <section className="order-section-card" aria-label="การชำระเงิน">
+          {paid ? <p>ชำระเงินแล้ว · PromptPay · {baht(order.total_amount)}</p>
+            : reconciling ? <><p>กำลังตรวจสอบการชำระเงิน · ไม่ต้องชำระซ้ำ</p><Link className="secondary-button inline-link" href={`/orders/${id}/payment`}>ดูสถานะการตรวจสอบ</Link></>
+              : paymentView.canPay && <Link className="primary-button inline-link" href={`/orders/${id}/payment`}>ชำระเงิน</Link>}
         </section>
       )}
 
       <section className="order-section-card order-timeline-card">
         <h2>สถานะออเดอร์</h2>
-        {terminal ? <div className="terminal-status"><Icon name="receipt" /><div><strong>{orderStatusLabel(order.status)}</strong><p>ออเดอร์นี้สิ้นสุดแล้ว</p></div></div> : <ol className="status-timeline">{steps.map((step, index) => { const stepState = index < activeIndex ? 'complete' : index === activeIndex ? 'current' : 'future'; return <li className={stepState} key={step}><span>{index < activeIndex ? <Icon name="check" size={14} /> : null}</span><div><strong>{orderStatusLabel(step)}</strong>{index === activeIndex && <small>สถานะปัจจุบัน</small>}</div></li>; })}</ol>}
+        {terminal ? (
+          <div className="terminal-status">
+            <Icon name="receipt" />
+            <div>
+              <strong>{orderStatusLabel(order.status)}</strong>
+              <p>ออเดอร์นี้สิ้นสุดแล้ว</p>
+            </div>
+          </div>
+        ) : (
+          <ol className="status-timeline">
+            {steps.map((step, index) => {
+              const stepState =
+                (index < activeIndex || order.status === "COMPLETED")
+                  ? "complete"
+                  : index === activeIndex
+                    ? "current"
+                    : "future";
+              return (
+                <li className={stepState} key={step}>
+                  <span>
+                    {(index < activeIndex || order.status === "COMPLETED") ? (
+                      <Icon name="check" size={14} />
+                    ) : null}
+                  </span>
+                  <div>
+                    <strong>{orderStatusLabel(step)}</strong>
+                    {index === activeIndex && <small>สถานะปัจจุบัน</small>}
+                  </div>
+                </li>
+              );
+            })}
+          </ol>
+        )}
       </section>
-      <section className="order-section-card"><h2>รายการอาหาร</h2><div className="order-detail-items">{order.items.map((item) => <article key={item.id}><div><strong>{item.quantity} × {item.item_name}</strong>{item.choices.length > 0 && <p>{item.choices.map((choice) => `${choice.choice_name}${choice.extra_price ? ` +${baht(choice.extra_price)}` : ''}`).join(' · ')}</p>}{item.note && <small>หมายเหตุ: {item.note}</small>}</div><strong>{baht(item.line_total)}</strong></article>)}</div></section>
-      {order.delivery_type === 'DELIVERY' && <section className="order-section-card delivery-info-card"><h2>ข้อมูลจัดส่ง</h2><div className="delivery-address-heading"><span><Icon name="map" size={20} /></span><div><strong>{order.delivery_address_label} · {order.delivery_dormitory_name}</strong><p>{order.delivery_soi_name} · ห้อง {order.delivery_room_number}</p></div></div>{order.delivery_location_text && <p className="snapshot-lines">{order.delivery_location_text}</p>}{order.delivery_note && <div className="delivery-note"><span>หมายเหตุถึงคนส่ง</span><p>{order.delivery_note}</p></div>}{order.delivery_contact_phone && <a className="delivery-phone" href={`tel:${order.delivery_contact_phone}`}><Icon name="phone" size={18} />โทร {order.delivery_contact_phone}</a>}</section>}
-      <section className="order-price-summary"><div><span>ค่าอาหาร</span><strong>{baht(order.subtotal_amount)}</strong></div><div><span>ค่าจัดส่ง</span><strong>{baht(order.delivery_fee)}</strong></div><div className="grand-total"><span>ยอดรวม</span><strong>{baht(order.total_amount)}</strong></div></section>
+      <section className="order-section-card">
+        <h2>รายการอาหาร</h2>
+        <div className="order-detail-items">
+          {order.items.map((item) => (
+            <article key={item.id}>
+              <div>
+                <strong>
+                  {item.quantity} × {item.item_name}
+                </strong>
+                {item.choices.length > 0 && (
+                  <OrderSnapshotChoices item={item} merchantId={order.merchant_id} />
+                )}
+                {item.note && <small>หมายเหตุ: {item.note}</small>}
+              </div>
+              <strong>{baht(item.line_total)}</strong>
+            </article>
+          ))}
+        </div>
+      </section>
+      {order.delivery_type === "DELIVERY" && (
+        <section className="order-section-card delivery-info-card">
+          <h2>ข้อมูลจัดส่ง</h2>
+          <div className="delivery-address-heading">
+            <span>
+              <Icon name="map" size={20} />
+            </span>
+            <div>
+              <strong>
+                {order.delivery_address_label} · {order.delivery_dormitory_name}
+              </strong>
+              <p>
+                {order.delivery_soi_name} · ห้อง {order.delivery_room_number}
+              </p>
+            </div>
+          </div>
+          {order.delivery_location_text && (
+            <p className="snapshot-lines">{order.delivery_location_text}</p>
+          )}
+          {order.delivery_note && (
+            <div className="delivery-note">
+              <span>หมายเหตุถึงคนส่ง</span>
+              <p>{order.delivery_note}</p>
+            </div>
+          )}
+          {order.delivery_contact_phone && (
+            <a
+              className="delivery-phone"
+              href={`tel:${order.delivery_contact_phone}`}
+            >
+              <Icon name="phone" size={18} />
+              โทร {order.delivery_contact_phone}
+            </a>
+          )}
+        </section>
+      )}
+      <section className="order-price-summary">
+        <div>
+          <span>ค่าอาหาร</span>
+          <strong>{baht(order.subtotal_amount)}</strong>
+        </div>
+        <div>
+          <span>ค่าจัดส่ง</span>
+          <strong>{baht(order.delivery_fee)}</strong>
+        </div>
+        {Number(order.discount_amount) > 0 && order.promotion_snapshot && (
+          <div>
+            <span>ส่วนลด · {order.promotion_snapshot.name}</span>
+            <strong>−{baht(order.discount_amount)}</strong>
+          </div>
+        )}
+        {Number(order.discount_amount) > 0 && order.coupon_snapshot && (
+          <div>
+            <span>คูปอง · {order.coupon_snapshot.code}</span>
+            <strong>−{baht(order.discount_amount)}</strong>
+          </div>
+        )}
+        <div className="grand-total">
+          <span>ยอดสุทธิ</span>
+          <strong>{baht(order.total_amount)}</strong>
+        </div>
+      </section>
+      {order.status === "COMPLETED" && (
+        <section className="order-section-card order-engagement-card">
+          <div className="order-engagement-heading">
+            <div>
+              <p>กลับมาอร่อยอีกครั้ง</p>
+              <h2>รีวิวหรือสั่งเมนูเดิม</h2>
+            </div>
+            <button
+              className="secondary-button"
+              type="button"
+              disabled={engagementBusy}
+              onClick={previewReorder}
+            >
+              สั่งอีกครั้ง
+            </button>
+          </div>
+          {engagementError && (
+            <p className="form-error" role="alert">
+              {engagementError}
+            </p>
+          )}
+          {reorderResult?.changed_prices.length > 0 && (
+            <div className="notice">
+              ราคาบางรายการมีการเปลี่ยนแปลง ระบบใช้ราคาปัจจุบันในตะกร้า
+            </div>
+          )}
+          {reorderResult?.unavailable_items.length > 0 && (
+            <div className="reorder-warning">
+              <strong>เพิ่มบางรายการไม่ได้</strong>
+              {reorderResult.unavailable_items.map((item) => (
+                <p key={item.order_item_id}>
+                  {item.item_name} ·{" "}
+                  {item.reason === "OPTION_MISSING"
+                    ? `ตัวเลือกเดิมไม่มีแล้ว (${item.missing_options.join(", ")})`
+                    : "เมนูไม่พร้อมจำหน่าย"}
+                </p>
+              ))}
+              {reorderResult.available_items.length > 0 && (
+                <button type="button" onClick={continueAvailableReorder}>
+                  เพิ่มเฉพาะรายการที่พร้อม
+                </button>
+              )}
+            </div>
+          )}
+          {reviewInfo.review ? (
+            <div className="submitted-review">
+              <strong>{"★".repeat(reviewInfo.review.rating)}</strong>
+              <p>
+                {reviewInfo.review.comment || "ให้คะแนนโดยไม่เพิ่มความคิดเห็น"}
+              </p>
+            </div>
+          ) : reviewInfo.eligible ? (
+            <form className="review-form" onSubmit={submitReview}>
+              <fieldset>
+                <legend>ให้คะแนนร้าน</legend>
+                <div className="star-input">
+                  {[1, 2, 3, 4, 5].map((value) => (
+                    <button
+                      type="button"
+                      key={value}
+                      className={value <= rating ? "is-active" : ""}
+                      onClick={() => setRating(value)}
+                      aria-label={`${value} ดาว`}
+                    >
+                      ★
+                    </button>
+                  ))}
+                </div>
+              </fieldset>
+              <label>
+                ความคิดเห็น (ไม่บังคับ)
+                <textarea
+                  value={reviewComment}
+                  onChange={(event) => setReviewComment(event.target.value)}
+                  maxLength={1000}
+                  rows={3}
+                  placeholder="อาหารและบริการเป็นอย่างไรบ้าง"
+                />
+              </label>
+              <button
+                className="primary-button"
+                type="submit"
+                disabled={engagementBusy}
+              >
+                ส่งรีวิว
+              </button>
+            </form>
+          ) : null}
+        </section>
+      )}
     </AppShell>
   );
 }

@@ -81,6 +81,11 @@ export function CartProvider({ children }) {
       save({ ...current, items: current.items.filter((item) => item.id !== itemId) });
     },
     clear() { save(EMPTY_CART); },
+    replace({ merchantId, merchantName, items }) {
+      if (!Number.isInteger(merchantId) || !Array.isArray(items) || !items.length) return false;
+      save({ merchantId, merchantName, items: items.map((item) => ({ ...item, id: item.id || globalThis.crypto.randomUUID() })) });
+      return true;
+    },
   }), [cart]);
   return <CartContext.Provider value={value}>{children}</CartContext.Provider>;
 }

@@ -1,0 +1,35 @@
+[Unit]
+Description=Select Topic 2 Next.js frontend
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=select-topic-2
+Group=select-topic-2
+WorkingDirectory=/opt/select-topic-2/frontend
+EnvironmentFile=/etc/select-topic-2/frontend.env
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/env node /opt/select-topic-2/node_modules/next/dist/bin/next start --hostname 127.0.0.1 --port 3000
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=15
+KillSignal=SIGTERM
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/opt/select-topic-2/frontend/.next/cache
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+LimitNOFILE=65536
+MemoryMax=420M
+
+[Install]
+WantedBy=multi-user.target

@@ -5,7 +5,7 @@ import { Icon } from '../icons';
 
 export function OrderListCard({ order }) {
   return (
-    <Link className="order-card" href={`/orders/${order.id}`}>
+    <div><Link className="order-card" href={`/orders/${order.id}`}>
       <div className="order-card-top"><span>{order.order_code}</span><Icon name="arrow" size={18} /></div>
       <h2>{order.store_name}</h2>
       <div className="order-card-status-row">
@@ -15,5 +15,9 @@ export function OrderListCard({ order }) {
       <div className="order-card-meta"><span>{order.item_count} รายการ</span><span>{formatOrderDate(order.created_at)}</span></div>
       {!!order.item_names?.length && <small>{order.item_names.join(', ')}</small>}
     </Link>
+    {order.payment_method === 'PROMPTPAY' && ['UNPAID', 'FAILED', 'PENDING_VERIFICATION'].includes(order.payment_status)
+      && !['CANCELLED', 'REJECTED', 'COMPLETED'].includes(order.status)
+      && <Link className="secondary-button inline-link" href={`/orders/${order.id}/payment`}>ชำระเงิน</Link>}
+    </div>
   );
 }

@@ -23,6 +23,7 @@ id_ed25519.*
 .DS_Store
 Thumbs.db
 backend/storage/
+backend/.runtime/
 pgdata/
 pgdata-*/
 postgres-data/

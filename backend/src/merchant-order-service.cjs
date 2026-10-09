@@ -1,6 +1,7 @@
 const { HttpError } = require('./http.cjs');
 const { notifySafely } = require('./line-order-notifier.cjs');
 const { enqueueNotification } = require('./notification-outbox.cjs');
+const { createFinanceService } = require('./finance-service.cjs');
 
 const permissions = {
   MANAGER: new Set(['VIEW', 'ACCEPT', 'REJECT', 'PREPARE', 'READY', 'KDS', 'ASSIGN_RIDER']),
@@ -13,7 +14,7 @@ const moneyNumber = (value) => value === null || value === undefined ? null : Nu
 
 function requirePermission(staff, permission) {
   if (!permissions[staff.role]?.has(permission)) {
-    throw new HttpError(403, 'staff_permission_denied', `${staff.role} cannot perform ${permission}`);
+    throw new HttpError(403, 'staff_permission_denied', 'บัญชีนี้ไม่มีสิทธิ์ดำเนินการนี้');
   }
 }
 
@@ -26,6 +27,7 @@ function createMerchantOrderService(db, { notifier } = {}) {
         'o.id', 'o.order_code', 'o.merchant_order_number', 'o.merchant_id', 'o.delivery_type',
         'o.status', 'o.payment_method', 'o.payment_status', 'o.subtotal_amount', 'o.delivery_fee',
         'o.total_amount', 'o.delivery_address_label', 'o.delivery_soi_name', 'o.delivery_dormitory_name',
+        'o.discount_amount', 'o.promotion_snapshot', 'o.coupon_snapshot',
         'o.delivery_location_text', 'o.delivery_room_number', 'o.delivery_contact_phone', 'o.delivery_note',
         'o.accepted_at', 'o.delivering_at', 'o.completed_at', 'o.created_at', 'o.updated_at',
         'c.display_name as customer_display_name', 'c.phone as customer_phone',
@@ -41,16 +43,29 @@ function createMerchantOrderService(db, { notifier } = {}) {
   async function itemsFor(query, orderIds) {
     if (!orderIds.length) return [];
     const items = await query('order_items')
-      .select('id', 'order_id', 'item_name', 'quantity', 'unit_price', 'note', 'is_completed')
+      .select('id', 'order_id', 'menu_item_id', 'item_name', 'quantity', 'unit_price', 'note', 'is_completed')
       .whereIn('order_id', orderIds).orderBy('id');
     const choices = items.length ? await query('order_item_choices')
-      .select('id', 'order_item_id', 'choice_name', 'extra_price')
+      .select('id', 'order_item_id', 'menu_option_choice_id', 'choice_name', 'extra_price')
       .whereIn('order_item_id', items.map((item) => item.id)).orderBy('id') : [];
-    return items.map((item) => ({
+    // Optional local-only provenance for the shared seed label presenter. Receipt values
+    // always come from snapshots; missing/edited master rows leave snapshot text intact.
+    const demoMenus = process.env.NODE_ENV === 'development' && items.length ? await query('menu_items as m')
+      .join('merchants as s', 's.id', 'm.merchant_id').whereIn('m.id', items.map((item) => item.menu_item_id).filter(Boolean))
+      .where('m.image_url', 'like', '/demo/%').select('m.id', 'm.name', 'm.image_url', 's.store_name') : [];
+    const demoChoices = demoMenus.length ? await query('menu_option_choices as c')
+      .join('menu_option_groups as g', 'g.id', 'c.option_group_id').whereIn('g.menu_item_id', demoMenus.map((menu) => menu.id))
+      .select('c.id', 'c.name', 'g.name as group_name', 'g.menu_item_id') : [];
+    return items.map(({ menu_item_id, ...item }) => ({
       ...item,
+      ...(demoMenus.some((menu) => menu.id === menu_item_id && menu.name === item.item_name)
+        ? { local_demo_menu: demoMenus.find((menu) => menu.id === menu_item_id && menu.name === item.item_name) } : {}),
       unit_price: moneyNumber(item.unit_price),
       choices: choices.filter((choice) => choice.order_item_id === item.id)
-        .map((choice) => ({ ...choice, extra_price: moneyNumber(choice.extra_price) })),
+        .map(({ menu_option_choice_id, ...choice }) => ({ ...choice, extra_price: moneyNumber(choice.extra_price),
+          ...(demoChoices.some((row) => row.id === menu_option_choice_id && row.menu_item_id === menu_item_id && row.name === choice.choice_name)
+            ? { local_demo_group: demoChoices.find((row) => row.id === menu_option_choice_id).group_name } : {}),
+        })),
     }));
   }
 
@@ -71,6 +86,9 @@ function createMerchantOrderService(db, { notifier } = {}) {
         delivery_note: order.delivery_note,
         customer: { display_name: order.customer_display_name, phone: order.customer_phone },
         subtotal_amount: moneyNumber(order.subtotal_amount),
+        discount_amount: moneyNumber(order.discount_amount),
+        promotion_snapshot: order.promotion_snapshot,
+        coupon_snapshot: order.coupon_snapshot,
         delivery_fee: moneyNumber(order.delivery_fee),
         total_amount: moneyNumber(order.total_amount),
         delivery: order.delivery_type === 'DELIVERY' ? {
@@ -125,6 +143,7 @@ function createMerchantOrderService(db, { notifier } = {}) {
     let queued = false;
     const event = { ACCEPTED: 'ORDER_ACCEPTED', PREPARING: 'PREPARING', READY: 'READY', REJECTED: 'REJECTED' }[to];
     await db.transaction(async (trx) => {
+      await createFinanceService(db).lockMerchant(trx, staff.merchant_id);
       const order = await orderRow(trx, staff, orderId, { lock: true });
       if (order.status !== from) {
         throw new HttpError(409, 'invalid_order_transition', `Cannot transition ${order.status} to ${to}`, { current_status: order.status, required_status: from });
@@ -140,6 +159,7 @@ function createMerchantOrderService(db, { notifier } = {}) {
       if (to === 'ACCEPTED') changes.accepted_at = trx.fn.now();
       await trx('orders').where({ id: order.id }).update(changes);
       refundRequired = to === 'REJECTED' && order.payment_status === 'PAID';
+      if (refundRequired) await createFinanceService(db).orderEvent(trx, order.id, 'REJECTED');
       if (event) queued = await enqueueNotification(notifier, trx, event, order.id);
     });
     const order = await getOrder(staff, orderId);
@@ -174,10 +194,14 @@ function createMerchantOrderService(db, { notifier } = {}) {
 
   async function listRiders(staff) {
     requirePermission(staff, 'ASSIGN_RIDER');
-    return db('merchant_staffs')
+    const riders = await db('merchant_staffs')
       .select('id', 'full_name', 'phone', 'username')
       .where({ merchant_id: staff.merchant_id, role: 'RIDER', is_active: true })
       .whereNull('deleted_at').orderBy('full_name');
+    const jobs = await db('orders').where({ merchant_id: staff.merchant_id })
+      .whereIn('status', ['READY', 'DELIVERING']).whereIn('assigned_rider_id', riders.map((rider) => rider.id))
+      .select('assigned_rider_id').count('* as count').groupBy('assigned_rider_id');
+    return riders.map((rider) => ({ ...rider, active_jobs: Number(jobs.find((row) => row.assigned_rider_id === rider.id)?.count || 0) }));
   }
 
   async function assignRider(staff, orderId, riderId) {

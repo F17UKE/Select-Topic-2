@@ -1,0 +1,60 @@
+.page :global(.menu-detail-page-content) { padding: 16px 16px 110px; }
+/* One width authority for every section; page-content owns horizontal padding. */
+.menuContent { display: grid; gap: 22px; width: 100%; max-width: 620px; min-width: 0; margin-inline: auto; padding-inline: 0; }
+.page .menuContent > * { width: 100%; max-width: none; min-width: 0; margin: 0; }
+.page :global(.customer-detail-back) { width: 44px; height: 44px; }
+.page :is(a, button, input, textarea):focus-visible { outline: 3px solid #ac3520; outline-offset: 3px; }
+.page :global(.menu-detail-image) { aspect-ratio: 4 / 3; border-radius: 20px; }
+.page :global(.menu-detail-image img) { object-fit: cover; }
+.page .menuContent :global(.menu-detail-copy) { padding: 18px 0 0; }
+.page :global(.menu-breadcrumb) { font-size: 12px !important; color: #746d65 !important; }
+.page :global(.menu-detail-copy h1) { font-size: clamp(24px, 6vw, 28px); line-height: 1.3; overflow-wrap: anywhere; }
+.page :global(.menu-detail-copy > p:not(.menu-breadcrumb)) { font-size: 14px; color: #746d65; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.page :global(.menu-detail-copy > strong) { color: #ac3520; font-size: 24px; }
+.page .menuContent :global(.option-groups) { gap: 22px; }
+.optionGroup { min-width: 0; margin: 0; padding: 0; border: 0; }
+.optionGroup legend { display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 0; gap: 10px; }
+.optionGroup legend > span { min-width: 0; overflow-wrap: anywhere; font-size: 17px; font-weight: 650; }
+.required, .optional { flex-shrink: 0; padding: 4px 8px; border-radius: 12px; font-size: 11px; font-weight: 500; }
+.required { color: #ac3520; background: #fff3f0; }
+.optional { color: #746d65; background: #f5f3f0; }
+.rule, .warning { margin: 6px 0 10px; font-size: 12px; line-height: 1.5; }
+.rule { color: #746d65; }
+.warning { color: #ac3520; }
+.choices { display: grid; gap: 8px; }
+.choice { display: flex; align-items: center; gap: 10px; min-height: 52px; padding: 12px; border: 1px solid #ece9e5; border-radius: 14px; background: #fff; cursor: pointer; }
+.choice input { appearance: none; display: grid; place-content: center; flex: 0 0 22px; width: 22px; height: 22px; margin: 0; border: 2px solid #b7b1aa; background: #fff; accent-color: #ac3520; cursor: inherit; }
+.choice input[type="radio"] { border-radius: 50%; }
+.choice input[type="checkbox"] { border-radius: 5px; }
+.choice input:checked { border-color: #ac3520; }
+.choice input[type="radio"]:checked::before { content: ""; width: 10px; height: 10px; border-radius: 50%; background: #ac3520; }
+.choice input[type="checkbox"]:checked { background: #ac3520; }
+.choice input[type="checkbox"]:checked::before { content: ""; width: 12px; height: 12px; background: #fff; clip-path: polygon(0 48%, 16% 32%, 40% 58%, 84% 10%, 100% 26%, 40% 92%); }
+@media (forced-colors: active) {
+  .choice input { appearance: auto; }
+  .choice input:checked::before { content: none; }
+}
+.choice > span { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 14px; color: #403a35; }
+.choice > strong { flex-shrink: 0; font-size: 12px; font-weight: 500; color: #746d65; }
+.choice:hover { border-color: #d6b3a9; }
+.selected, .selected:hover { border-color: #ac3520; background: #fff7f5; }
+.disabled { opacity: .65; cursor: not-allowed; }
+.unavailable { display: block; width: fit-content; margin-top: 4px; border-radius: 8px; color: #984730; background: #fff0e9; font-size: 11px; }
+.quantity { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.quantity h2, .note label { margin: 0; font-size: 16px; font-weight: 650; }
+.quantity small { display: block; margin-top: 4px; color: #746d65; font-size: 12px; }
+.quantity :global(.quantity-control) { flex-shrink: 0; grid-template-columns: 44px 40px 44px; align-items: center; }
+.quantity :global(.quantity-control button) { width: 44px; height: 44px; }
+.quantity :global(.quantity-control strong) { color: #403a35; font-size: 17px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.quantity :global(.quantity-control button:disabled) { color: #aaa29a; background: #f5f3f0; cursor: not-allowed; }
+.note label { display: grid; gap: 10px; }
+.note textarea { width: 100%; min-height: 100px; max-width: 100%; resize: vertical; border: 1px solid #dedad6; border-radius: 15px; padding: 12px; font: inherit; font-size: 14px; font-weight: 400; color: #403a35; background: #fff; }
+.note textarea:focus { border-color: #ac3520; }
+.purchaseBar { position: fixed; z-index: 35; left: 50%; transform: translateX(-50%); bottom: calc(69px + env(safe-area-inset-bottom)); width: min(100%, 760px); display: grid; grid-template-columns: minmax(0, 1fr) minmax(155px, 1.2fr); align-items: center; gap: 12px; padding: 12px 16px; border-top: 1px solid #ece9e5; background: #fff; box-shadow: 0 -4px 18px #28241f08; }
+.purchaseBar > div { min-width: 0; display: grid; gap: 2px; }
+.purchaseBar span { color: #746d65; font-size: 12px; }
+.purchaseBar strong { color: #ac3520; font-size: 22px; overflow-wrap: anywhere; }
+.purchaseBar button { min-height: 54px; padding: 10px; border: 0; border-radius: 14px; background: #ac3520; color: #fff; font-size: 14px; font-weight: 650; cursor: pointer; }
+.purchaseBar button:disabled { opacity: 1; color: #756761; background: #ede4e0; cursor: not-allowed; }
+.purchaseBar button:not(:disabled):hover { background: #912b19; }
+.purchaseBar button:not(:disabled):active { background: #7d2516; }

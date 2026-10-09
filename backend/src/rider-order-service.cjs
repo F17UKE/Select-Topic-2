@@ -1,12 +1,14 @@
 const { HttpError } = require('./http.cjs');
 const { notifySafely } = require('./line-order-notifier.cjs');
 const { enqueueNotification } = require('./notification-outbox.cjs');
+const { createFinanceService } = require('./finance-service.cjs');
 
 function requireRider(staff) {
   if (staff.role !== 'RIDER') throw new HttpError(403, 'rider_role_required');
 }
 
 function createRiderOrderService(db, { notifier } = {}) {
+  const finance = createFinanceService(db);
   async function assignedOrder(query, staff, orderId, { lock = false } = {}) {
     requireRider(staff);
     let builder = query('orders as o')
@@ -82,6 +84,7 @@ function createRiderOrderService(db, { notifier } = {}) {
   async function transition(staff, orderId, from, to) {
     let queued = false;
     await db.transaction(async (trx) => {
+      await finance.lockMerchant(trx, staff.merchant_id);
       const order = await assignedOrder(trx, staff, orderId, { lock: true });
       if (order.delivery_type !== 'DELIVERY') throw new HttpError(409, 'pickup_delivery_transition_not_supported');
       if (order.status !== from) {
@@ -93,6 +96,7 @@ function createRiderOrderService(db, { notifier } = {}) {
       if (to === 'DELIVERING') changes.delivering_at = trx.fn.now();
       if (to === 'COMPLETED') changes.completed_at = trx.fn.now();
       await trx('orders').where({ id: order.id, assigned_rider_id: staff.id }).update(changes);
+      if (to === 'COMPLETED') await finance.orderEvent(trx, order.id, to);
       queued = await enqueueNotification(notifier, trx, to, order.id);
     });
     const result = await getOrder(staff, orderId);

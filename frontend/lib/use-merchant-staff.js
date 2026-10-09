@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { api, ApiError } from './api';
+import { usePathname, useRouter } from 'next/navigation';
+import { staffHome, staffRouteRedirect, staffErrorMessage } from './staff-portal.mjs';
 
 async function fetchSession() {
   const [config, session] = await Promise.all([
@@ -15,10 +17,14 @@ async function fetchSession() {
 }
 
 export function useMerchantStaff() {
+  const router = useRouter();
+  const pathname = usePathname();
   const [staff, setStaff] = useState(null);
   const [authConfig, setAuthConfig] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const redirect = staff ? staffRouteRedirect(staff.role, pathname) : null;
+  useEffect(() => { if (redirect) router.replace(redirect); }, [redirect, router]);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -28,7 +34,7 @@ export function useMerchantStaff() {
       setAuthConfig(config);
       setStaff(session?.staff || null);
     } catch (requestError) {
-      setError(requestError.message);
+      setError(staffErrorMessage(requestError));
     } finally {
       setLoading(false);
     }
@@ -43,7 +49,7 @@ export function useMerchantStaff() {
       setLoading(false);
     }).catch((requestError) => {
       if (!active) return;
-      setError(requestError.message);
+      setError(staffErrorMessage(requestError));
       setLoading(false);
     });
     return () => { active = false; };
@@ -57,12 +63,13 @@ export function useMerchantStaff() {
         method: 'POST', body: JSON.stringify({ username }),
       });
       setStaff(result.staff);
+      router.replace(staffHome(result.staff.role));
     } catch (requestError) {
-      setError(requestError.message);
+      setError(staffErrorMessage(requestError));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [router]);
 
   const passwordLogin = useCallback(async (username, password) => {
     setLoading(true);
@@ -72,12 +79,13 @@ export function useMerchantStaff() {
         method: 'POST', body: JSON.stringify({ username, password }),
       });
       setStaff(result.staff);
+      router.replace(staffHome(result.staff.role));
     } catch (requestError) {
-      setError(requestError.message);
+      setError(staffErrorMessage(requestError));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [router]);
 
   const logout = useCallback(async () => {
     await api('/api/merchant/auth/logout', { method: 'POST' });
@@ -88,5 +96,5 @@ export function useMerchantStaff() {
     authConfig?.mode === 'password' ? passwordLogin(username, password) : devLogin(username)
   ), [authConfig, devLogin, passwordLogin]);
 
-  return { staff, authConfig, loading, error, refresh, devLogin, passwordLogin, login, logout };
+  return { staff: redirect ? null : staff, authConfig, loading: loading || Boolean(redirect), error, refresh, devLogin, passwordLogin, login, logout };
 }

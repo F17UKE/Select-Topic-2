@@ -1,5 +1,14 @@
 # 📌 PROJECT CONTEXT: LINE OA Food Delivery Platform (LIFF-based)
 
+## Current Finance sprint (local, 2026-10-09)
+
+Finance 008 is implemented and applied locally. [Current implementation/operator report](docs/FINANCE_SPRINT_REPORT.md) supersedes earlier Finance NOT IMPLEMENTED or review-only notes below. Customer/Admin/Merchant/Kitchen/Rider designs remain intact; new Finance pages use the existing shells.
+
+Centralized Platform collection is explicit Super Admin opt-in and pins immutable recipient versions on new orders/payments. Public local mode is still LEGACY_MERCHANT_DIRECT. Commission 500bps, integer satang, immutable balanced ledger, PENDING -> AVAILABLE on completion, merchant debt offset, manager withdrawal, owner-confirmed manual payout, multiple component refunds, paid banner review and optional three-day request scheduler are available.
+
+Confirm Paid requires normalized bank reference; private proof optional. Shared bank-reference uniqueness spans payouts and refunds. No reference means no PAID. Production cutover/real banking/provider verification were not performed; no Cloud, commit or push. No synthetic balances or historical GP were created.
+
+
 > **วัตถุประสงค์ของเอกสารนี้:** ใช้เป็นบริบทตั้งต้นหลัก (Master Context) สำหรับการพัฒนาและป้อนให้ AI Assistant รับทราบขอบเขตทางธุรกิจ (Business Logic), สถาปัตยกรรมระบบ, สถานะกระบวนการ (State Machine), และข้อกำหนดทางเทคนิคทั้งหมด เพื่อให้การเขียนโค้ดและสร้าง API สอดคล้องกับมาตรฐานของระบบโดยสมบูรณ์[cite: 4]
 
 ---
@@ -12,6 +21,38 @@
   2. การค้นหาร้านค้าและเมนูกระจัดกระจาย ไม่เป็นหมวดหมู่[cite: 4]
   3. ติดตามสถานะออเดอร์ลำบาก และเกิดความผิดพลาดในการยืนยันยอดโอนเงิน[cite: 4]
 * **แนวทางแก้ไข (Solution):** พัฒนา Web Application ผ่าน LIFF ที่รวมศูนย์การค้นหา, ควบคุมสถานะคำสั่งซื้อผ่าน Finite State Machine, คำนวณค่าส่งตามระยะซอย/โซน, รองรับการปรับแต่งเมนู (Modifiers), เชื่อมต่อ Dynamic PromptPay QR Code, ตรวจสลิปอัตโนมัติ, ระบบครัว KDS, บัญชีพนักงานร้านค้า (Merchant Staff) พร้อมระบบแชทแบบ Order-based ที่รองรับการแจ้งเตือนผ่าน LINE Push Message และระบบล้างข้อมูลหมดอายุทุก 24 ชั่วโมง[cite: 4]
+
+### Phase H customer engagement policy
+
+- ลูกค้ารีวิวได้หนึ่งครั้งต่อออเดอร์ของตนที่ `COMPLETED`; ร้านค้าอ่านได้ แต่แก้ไขหรือลบไม่ได้;
+  Admin ซ่อนหรือเผยแพร่โดยมี audit log.
+- ร้านโปรดเป็นข้อมูลของ customer แต่ละคน และร้านที่ถูกระงับยังคงอยู่ในประวัติพร้อมสถานะ unavailable.
+- Reorder เป็น preview จาก menu master, option, ราคา, availability และ stock ปัจจุบัน ก่อนสร้าง cart;
+  ไม่ใช้ราคา snapshot เก่าเพื่อสร้างออเดอร์ใหม่.
+- Checkout ใช้ `AUTO PROMOTION XOR COUPON`: หนึ่งออเดอร์เลือกได้หนึ่งแหล่งส่วนลดเท่านั้น.
+  Backend คำนวณเงินเป็น satang, lock quota และบันทึก snapshot/redemption ใน transaction เดียวกับ order.
+- Notification history เป็น provider-independent projection แยกจาก LINE outbox. Customer UI ไม่เห็น
+  provider token, raw payload หรือ delivery internals.
+
+### Current implementation boundary after Phase I
+
+- Admin Integration Settings (local, 2026-10-09) adds encrypted provider configuration under existing
+  SUPER_ADMIN/CSRF policy. DB overrides take precedence over environment fallbacks per operation.
+  Migration 007 adds only `integration_settings`; Finance/settlement remains frozen. Platform
+  PromptPay is stored for future use and **not wired** to merchant-specific QR/payment recipients.
+  Development auto-manages a persistent, ignored encryption key file; production uses an explicit ENV
+  key or pre-provisioned persistent file. AES-256-GCM envelope and provider behavior are unchanged.
+  See `docs/ADMIN_INTEGRATION_SETTINGS.md` for key preservation, runtime rotation and verification limits.
+
+- Customer, merchant/KDS, rider, Admin, payment, LINE adapters, promotions/coupons, reviews,
+  favourites, reorder preview, banners and notification history are implemented and locally verified.
+- `order_messages` and `order_chat_read_states` are retained for future compatibility, but order chat
+  business logic/UI and its LINE bridge are not implemented yet.
+- Refunds are manual, stock is maintained manually, and pickup completion UI remains deferred.
+- Production readiness still depends on real LINE, SlipOK and private S3-compatible provider checks,
+  HTTPS/domain setup, production secrets, network policy and an operator-reviewed dependency advisory.
+- Operational architecture and release gates are documented in `SYSTEM_ARCHITECTURE.md` and
+  `DEPLOYMENT_CHECKLIST.md`.
 
 ---
 
@@ -54,7 +95,7 @@
 * **Database Management:** Relational Database (PostgreSQL จัดการผ่าน Knex.js Migration & Query Builder)[cite: 4]
 * **Payment Integration:** Dynamic PromptPay QR Generator (`promptpay-qr` library)[cite: 4]
 * **Verification Engine:** Slip Verification API สำหรับตรวจสอบความถูกต้องของสลิปแบบอัตโนมัติ[cite: 4]
-* **Asset Storage:** จัดเก็บรูปภาพ (สลิป, โปรไฟล์, เมนู) บน Object Storage และบันทึกเฉพาะ URL ลงฐานข้อมูล[cite: 4]
+* **Asset Storage:** จัดเก็บไฟล์ private เช่นสลิปและ Admin banner บน Object Storage และบันทึก object key; public catalog assets อาจเก็บ URL ตามชนิดข้อมูล[cite: 4]
 
 ---
 
@@ -72,6 +113,14 @@
 7. **`CANCELLED` / `REJECTED`:** ลูกค้า/ระบบยกเลิก หรือร้านปฏิเสธออเดอร์ เป็นสถานะสิ้นสุด[cite: 4]
 
 ### 4.2 Dynamic Payment & Verification Pipeline
+Local update (2026-10-08): Checkout routes to `/orders/[id]/payment`; successful verification
+replaces the route with `/orders/[id]` after 1.1 seconds. Order Detail is tracking-only with
+a compact payment link/paid summary. Shared Bottom Nav is hidden only on the payment page.
+EasySlip v2 is opt-in (`PAYMENT_VERIFICATION_MODE=easyslip`); existing mock/CheckSlip remain.
+The QR generator remains local `promptpay-qr` + `qrcode`, using the persisted order total.
+No schema/migration change. See README and VERIFICATION for strict recipient prerequisites,
+remaining live-provider/visual QA gates and private configuration. No live provider call was run.
+
 1. เมื่อออเดอร์อยู่ในสถานะรอชำระเงิน ระบบจะนำ PromptPay ID ของร้านค้า + `total_amount` ของออเดอร์นั้นมาสร้างเป็น Dynamic PromptPay QR Code[cite: 4]
 2. ลูกค้าอัปโหลดรูปภาพสลิปโอนเงิน ระบบจะตรวจสอบผ่าน API อัตโนมัติ:[cite: 4]
    * ยอดเงินที่โอน (`amount_transferred`) ตรงกับยอดสุทธิหรือไม่[cite: 4]
@@ -82,7 +131,7 @@
 
 ### 4.3 Kitchen Display System (KDS) Logic
 * ตาราง `order_items` มีฟิลด์ `is_completed` (Boolean) เพื่อระบุสถานะรายจาน[cite: 4]
-* **การทำงานระดับจาน:** เมื่อพ่อครัวทำเสร็จ 1 รายการ สามารถอัปเดต `is_completed = true` ระบบจะตรวจสอบจำนวนจานที่เหลือ หากเสร็จครบทุกจาน จะปรับสถานะออเดอร์เป็น `READY` โดยอัตโนมัติ[cite: 4]
+* **การทำงานระดับจาน:** เมื่อพ่อครัวทำเสร็จ 1 รายการ สามารถอัปเดต `is_completed = true`; เมื่อครบทุกจาน ผู้มีสิทธิ์ต้องกด Ready เองตาม state machine ระบบไม่เปลี่ยนสถานะโดยอัตโนมัติ[cite: 4]
 * **การทำงานระดับบิล:** ร้านค้ากดปุ่ม "เสร็จสิ้นทั้งหมด" เพื่อปรับสถานะออเดอร์ และระบบจะอัปเดต `is_completed = true` ให้ทุกรายการในบิลนั้น[cite: 4]
 
 ### 4.4 Real-time Chat, Multi-Role Messaging & Read Receipts
@@ -115,3 +164,28 @@
 * **Strict State Transition:** ทุกฟังก์ชันที่เกี่ยวข้องกับการปรับสถานะออเดอร์ ต้องดักตรวจสอบสถานะตั้งต้นตาม Order State Machine เสมอ ห้ามข้ามขั้นตอน[cite: 4]
 * **Security & Validation:** ตรวจสอบความถูกต้องของ Input เสมอ และบังคับใช้ Role-Based Access Control (RBAC) กั้นสิทธิ์ Rider และ Customer[cite: 4]
 * **High Performance Querying:** คำนึงถึงดัชนี (Indexes) และเขียนคำสั่ง Query ให้อยู่ในรูปแบบที่ประหยัด I/O ของ Database เสมอ[cite: 4]
+
+## Phase G local merchant management (2026-10-06)
+
+Merchant management now lives under /api/merchant/management and /merchant management pages.
+MANAGER owns store, catalog, options, manual stock, fees and staff; CASHIER/KITCHEN can read
+menu; CASHIER can read history/basic reports; RIDER uses its existing isolated portal.
+Tenant is always session-derived. Manager mutations serialize on merchant row and append
+MERCHANT_STAFF audit records in the same transaction. Staff passwords use bcrypt cost 12;
+last active manager cannot be removed. A rider with READY/DELIVERING work cannot be disabled
+or changed to another role; the rider row lock serializes with assignment.
+
+005 adds weekly Bangkok opening hours without changing 001–004. is_open remains manual close;
+no schedule keeps old behavior. PromptPay is masked and changes are blocked while nonterminal
+unpaid orders exist. Stock is manual only (no automatic reserve/decrement yet). Historical
+receipts keep snapshots when catalog/options/fees change. Promotions and banners are read-only
+for managers; Admin remains publishing authority. No synthetic notification inbox is added.
+
+### Merchant recipient configuration (local, 2026-10-09)
+
+Super Admin can configure EasySlip receiving-bank mapping per merchant in Merchant Detail.
+Encrypted DB overrides take precedence over EASYSLIP_MERCHANT_ACCOUNTS for the same merchant;
+explicit disable blocks verification and clear restores ENV fallback. PromptPay/QR still uses
+merchant identity; the server derives it and payment verification still enforces exact recipient
+matching. No centralized recipient or Finance changes. Reuses integration_settings (no migration).
+See docs/ADMIN_MERCHANT_RECIPIENTS.md for the exact format and validation boundaries.

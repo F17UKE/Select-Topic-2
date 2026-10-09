@@ -4,23 +4,35 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { AppShell, LoadingCards, SignInCard } from '../../components/app-shell';
 import { CustomerDetailHeader } from '../../components/customer/detail-header';
+import { CheckoutAddress, CheckoutDeliveryNote, CheckoutItems, CheckoutDiscounts, CheckoutTotals, CheckoutPayment, checkoutErrorMessage } from '../../components/customer/checkout-sections';
+import styles from '../../components/customer/checkout.module.css';
 import { Icon } from '../../components/icons';
 import { api, baht } from '../../lib/api';
 import { useCart } from '../../lib/cart';
 import { useCustomer } from '../../lib/use-customer';
+import { requestCheckoutQuote } from '../../lib/checkout-quote.mjs';
 
 export default function CheckoutPage() {
   const router = useRouter();
   const session = useCustomer();
-  const { cart, estimatedSubtotal, clear } = useCart();
+  const { cart, clear } = useCart();
   const [addresses, setAddresses] = useState([]);
   const [addressId, setAddressId] = useState('');
   const [merchant, setMerchant] = useState(null);
+  const [promotions, setPromotions] = useState([]);
+  const [promotionId, setPromotionId] = useState('');
+  const [couponInput, setCouponInput] = useState('');
+  const [couponCode, setCouponCode] = useState('');
+  const [quoteResult, setQuoteResult] = useState(null);
   const [deliveryNote, setDeliveryNote] = useState('');
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
+  const [promotionsLoadedFor, setPromotionsLoadedFor] = useState(null);
+  const [quoteRequest, setQuoteRequest] = useState({ pending: false, key: null, kind: null, error: '' });
   const idempotencyKey = useRef(null);
+  const quoteInFlight = useRef(null);
+  const confirmedQuoteKey = useRef(null);
 
   const loadQuote = useCallback(async (nextAddressId) => {
     if (!cart.merchantId || !nextAddressId) return;
@@ -46,6 +58,80 @@ export default function CheckoutPage() {
     return () => { active = false; };
   }, [session.customer, cart.items.length, loadQuote]);
 
+  const orderPayload = useCallback(() => ({
+    merchantId: cart.merchantId, addressId: Number(addressId), deliveryType: 'DELIVERY', deliveryNote,
+    promotionId: promotionId ? Number(promotionId) : null,
+    couponCode: couponCode || null,
+    items: cart.items.map((item) => ({ menuItemId: item.menuItemId, quantity: item.quantity, note: item.note, optionChoiceIds: item.optionChoiceIds })),
+  }), [cart.merchantId, cart.items, addressId, deliveryNote, promotionId, couponCode]);
+
+  useEffect(() => {
+    if (!session.customer || !cart.merchantId) return;
+    let active = true;
+    api('/api/promotions?merchantId=' + cart.merchantId).then((result) => { if (active) setPromotions(result.promotions); }).catch(() => { if (active) setPromotions([]); }).finally(() => { if (active) setPromotionsLoadedFor(cart.merchantId); });
+    return () => { active = false; };
+  }, [session.customer, cart.merchantId]);
+
+  const payloadKey = JSON.stringify(orderPayload());
+  const quote = quoteResult?.key === payloadKey ? quoteResult.value : null;
+  const displayQuote = quoteResult?.value || null;
+  const quoting = quoteRequest.pending || (!!addressId && !!cart.items.length && !quote && quoteRequest.key !== payloadKey);
+
+  const cancelQuote = useCallback(() => {
+    const request = quoteInFlight.current;
+    quoteInFlight.current = null;
+    request?.controller.abort();
+  }, []);
+
+  const refreshQuote = useCallback(async (key, kind = 'checkout', onSuccess) => {
+    // Synchronous guard also catches double-click/Enter before React renders disabled controls.
+    if (quoteInFlight.current) return;
+    if (kind === 'checkout' && confirmedQuoteKey.current === key) {
+      setQuoteRequest({ pending: false, key, kind, error: '' });
+      return;
+    }
+    const request = { controller: new AbortController() };
+    quoteInFlight.current = request;
+    setQuoteRequest({ pending: true, key, kind, error: '' });
+    setError('');
+    let failure = '';
+    try {
+      const value = await requestCheckoutQuote(key, request.controller);
+      if (quoteInFlight.current !== request) return;
+      confirmedQuoteKey.current = key;
+      setQuoteResult({ key, value });
+      onSuccess?.();
+    } catch (requestError) {
+      if (quoteInFlight.current !== request) return;
+      failure = requestError.body?.error || 'quote_failed';
+      if (kind === 'checkout') setError(failure);
+    } finally {
+      if (quoteInFlight.current === request) {
+        quoteInFlight.current = null;
+        setQuoteRequest({ pending: false, key, kind, error: failure });
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!session.customer || !addressId || !cart.items.length) return;
+    // Defer the request lifecycle; StrictMode cleanup can cancel before transport starts.
+    let active = true;
+    queueMicrotask(() => { if (active) refreshQuote(payloadKey); });
+    return () => { active = false; cancelQuote(); };
+  }, [session.customer, addressId, cart.items.length, payloadKey, refreshQuote, cancelQuote]);
+
+  function changeDiscount(nextPromotion, nextCoupon, kind) {
+    if (quoting || loading || submitting || quoteInFlight.current || !addressId) return;
+    if (nextPromotion === promotionId && nextCoupon === couponCode && quote) return;
+    const nextPayload = { ...orderPayload(), promotionId: nextPromotion ? Number(nextPromotion) : null, couponCode: nextCoupon || null };
+    return refreshQuote(JSON.stringify(nextPayload), kind, () => {
+      setPromotionId(nextPromotion); setCouponCode(nextCoupon);
+      if (!nextCoupon) setCouponInput('');
+      idempotencyKey.current = null;
+    });
+  }
+
   function changeAddress(event) {
     const next = event.target.value;
     setAddressId(next);
@@ -59,28 +145,17 @@ export default function CheckoutPage() {
   }
 
   async function createOrder() {
-    if (!merchant?.delivery?.available) return;
+    if (!merchant?.accepting_orders || !quote || quoting || !merchant?.delivery?.available) return;
     setSubmitting(true); setError('');
     if (!idempotencyKey.current) idempotencyKey.current = globalThis.crypto.randomUUID();
     try {
       const result = await api('/api/orders', {
         method: 'POST',
         headers: { 'Idempotency-Key': idempotencyKey.current },
-        body: JSON.stringify({
-          merchantId: cart.merchantId,
-          addressId: Number(addressId),
-          deliveryType: 'DELIVERY',
-          deliveryNote,
-          items: cart.items.map((item) => ({
-            menuItemId: item.menuItemId,
-            quantity: item.quantity,
-            note: item.note,
-            optionChoiceIds: item.optionChoiceIds,
-          })),
-        }),
+        body: JSON.stringify(orderPayload()),
       });
       clear();
-      router.replace(`/orders/${result.order.id}`);
+      router.replace(`/orders/${result.order.id}/payment`);
     } catch (requestError) {
       const messages = {
         unsupported_delivery_location: 'ร้านนี้ยังไม่จัดส่งไปยังที่อยู่ที่เลือก',
@@ -88,6 +163,12 @@ export default function CheckoutPage() {
         option_min_choices: 'ตัวเลือกของเมนูไม่ครบ กรุณากลับไปแก้ไขรายการ',
         option_max_choices: 'เลือกตัวเลือกเกินจำนวนที่ร้านกำหนด',
         merchant_closed: 'ร้านปิดชั่วคราว ยังไม่สามารถสร้างออเดอร์ได้',
+        merchant_suspended: 'ร้านนี้ถูกระงับชั่วคราว ยังไม่รับออเดอร์ใหม่',
+        coupon_unavailable: 'คูปองนี้ยังไม่เริ่ม หมดอายุ หรือปิดใช้งานแล้ว',
+        coupon_minimum_not_met: 'ยอดอาหารยังไม่ถึงขั้นต่ำของคูปอง',
+        coupon_usage_limit: 'คูปองนี้ถูกใช้ครบจำนวนแล้ว',
+        coupon_customer_limit: 'คุณใช้คูปองนี้ครบจำนวนแล้ว',
+        coupon_wrong_merchant: 'คูปองนี้ใช้กับร้านอื่น',
       };
       setError(messages[requestError.body?.error] || requestError.message);
     } finally { setSubmitting(false); }
@@ -101,17 +182,29 @@ export default function CheckoutPage() {
   const deliveryFee = merchant?.delivery?.available ? merchant.delivery.fee : null;
   const selectedAddress = addresses.find((address) => String(address.id) === addressId);
   return (
-    <AppShell variant="checkout" header={detailHeader}>
-      <section className="checkout-section checkout-address-section">
-        <div className="checkout-section-title"><span><Icon name="map" size={20} /></span><div><p>ที่อยู่จัดส่ง</p>{selectedAddress && <><h1>{selectedAddress.label} · {selectedAddress.dormitory_name}</h1><small>ห้อง {selectedAddress.room_number}</small></>}</div></div>
-        {addresses.length ? <label className="checkout-address-select"><span className="sr-only">เลือกที่อยู่จัดส่ง</span><select value={addressId} onChange={changeAddress} aria-label="เลือกที่อยู่จัดส่ง">{addresses.map((address) => <option key={address.id} value={address.id}>{address.label} · {address.dormitory_name} · ห้อง {address.room_number}</option>)}</select><Icon name="chevronDown" size={18} /></label> : <p className="form-error">กรุณาเพิ่มที่อยู่ในหน้าโปรไฟล์ก่อน</p>}
-      </section>
-      <section className="checkout-section checkout-order-section"><div className="checkout-section-title"><span><Icon name="receipt" size={20} /></span><div><p>รายการอาหาร</p><h2>{cart.merchantName}</h2></div></div><div className="checkout-items">{cart.items.map((item) => <div key={item.id}><span><b>{item.quantity} × {item.name}</b>{!!item.choices.length && <small>{item.choices.map((choice) => choice.name).join(' · ')}</small>}{item.note && <small>หมายเหตุ: {item.note}</small>}</span><strong>{baht((item.unitPriceEstimate + item.choices.reduce((sum, choice) => sum + choice.extraPrice, 0)) * item.quantity)}</strong></div>)}</div></section>
-      <section className="checkout-section checkout-note-section"><label>หมายเหตุถึงคนส่ง<textarea value={deliveryNote} onChange={changeDeliveryNote} maxLength={1000} rows={3} placeholder="เช่น ฝากไว้ที่ล็อบบี้ หรือโทรเมื่อถึง" /></label><p className="helper-text">หมายเหตุนี้แยกจากหมายเหตุของแต่ละเมนู</p></section>
-      {loading ? <LoadingCards /> : <section className="checkout-total"><div><span>ค่าอาหาร</span><strong>{baht(estimatedSubtotal)}</strong></div><div><span>ค่าจัดส่ง {merchant?.delivery?.soi_name || 'ที่อยู่ที่เลือก'}</span><strong>{deliveryFee === null ? 'ไม่รองรับ' : baht(deliveryFee)}</strong></div><div className="grand-total"><span>ยอดรวม</span><strong>{deliveryFee === null ? '—' : baht(estimatedSubtotal + deliveryFee)}</strong></div></section>}
+    <div className={styles.page}><AppShell variant="checkout" header={detailHeader}>
+      <CheckoutAddress addresses={addresses} addressId={addressId} selectedAddress={selectedAddress} onChange={changeAddress}>
+        <CheckoutDeliveryNote value={deliveryNote} onChange={changeDeliveryNote} />
+      </CheckoutAddress>
+      <CheckoutItems cart={cart} />
+      <CheckoutDiscounts promotions={promotions} promotionId={promotionId} couponInput={couponInput} couponCode={couponCode}
+        promotionsLoading={promotionsLoadedFor !== cart.merchantId} quote={displayQuote} quoting={quoting}
+        pendingKind={quoteRequest.kind} discountError={quoteRequest.kind !== 'checkout' ? quoteRequest.error : ''}
+        controlsDisabled={loading || submitting}
+        onPromotionChange={(event) => changeDiscount(event.target.value, event.target.value ? '' : couponCode, 'promotion')}
+        onCouponInput={(event) => setCouponInput(event.target.value.toUpperCase())}
+        onApplyCoupon={() => { const normalized = couponInput.trim().toUpperCase(); if (!normalized) return; return changeDiscount('', normalized, 'coupon'); }}
+        onRemoveCoupon={() => changeDiscount(promotionId, '', 'remove')} />
+      <CheckoutPayment />
+      {merchant && !merchant.accepting_orders && <div className="notice error-notice">{merchant.is_active ? 'ร้านปิดชั่วคราว' : 'ร้านถูกระงับชั่วคราว'} · ไม่รับออเดอร์ใหม่</div>}
+      {!displayQuote && (loading || quoting) ? <LoadingCards /> : <CheckoutTotals quote={displayQuote} />}
+      {!quoting && quoteRequest.kind === 'checkout' && quoteRequest.error && <button type="button" className={styles.couponCancel} onClick={() => refreshQuote(payloadKey)}>ลองตรวจสอบยอดอีกครั้ง</button>}
       {deliveryFee === null && !loading && <div className="notice error-notice">ร้านนี้ยังไม่จัดส่งไปยังที่อยู่ที่เลือก</div>}
-      {error && <p className="form-error" role="alert">{error}</p>}
-      <button className="primary-button order-submit" type="button" disabled={submitting || loading || deliveryFee === null || !addresses.length} aria-busy={submitting} onClick={createOrder}>{submitting ? 'กำลังสร้างออเดอร์…' : 'ยืนยันสั่งอาหาร'}</button>
-    </AppShell>
+      {error && <p className="form-error" role="alert">{checkoutErrorMessage(error)}</p>}
+      <section className={styles.confirmBar} aria-label="ยืนยันออเดอร์">
+        <div><span>ยอดสุทธิ</span><strong>{displayQuote ? baht(displayQuote.total_amount) : '—'}</strong></div>
+        <button type="button" disabled={submitting || loading || quoting || !quote || !merchant?.accepting_orders || deliveryFee === null || !addresses.length} aria-busy={submitting} onClick={createOrder}>{submitting ? 'กำลังสร้างออเดอร์...' : 'ยืนยันสั่งอาหาร'}</button>
+      </section>
+    </AppShell></div>
   );
 }

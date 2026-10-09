@@ -1,0 +1,109 @@
+.page :global(.checkout-page-content) { padding: 16px 16px 130px; }
+.page :global(.customer-detail-back) { width: 44px; height: 44px; }
+.page :is(a, button, input, select, textarea):focus-visible { outline: 3px solid #ac3520; outline-offset: 3px; }
+.section { min-width: 0; margin-bottom: 14px; padding: 16px; border: 1px solid #ece9e5; border-radius: 17px; background: #fff; }
+.section h2 { margin: 0 0 12px; font-size: 17px; line-height: 1.4; }
+.sectionHeading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.sectionHeading h2 { margin: 0; }
+.sectionHeading a, .addressCard button, .dialogHeading button { display: inline-flex; align-items: center; justify-content: center; min-width: 44px; min-height: 44px; padding: 4px; border: 0; background: none; color: #ac3520; font-size: 13px; cursor: pointer; }
+.addressCard { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; align-items: start; gap: 10px; }
+.addressCard button { padding: 6px 10px; border: 1px solid #e3d7d2; border-radius: 999px; white-space: nowrap; }
+.addressCard button:hover { background: #fff3f0; }
+.addressCard > svg { margin-top: 3px; color: #ac3520; }
+.addressCard strong { display: block; font-size: 14px; overflow-wrap: anywhere; }
+.addressCard p { margin: 4px 0 0; color: #746d65; font-size: 13px; overflow-wrap: anywhere; }
+.addressDialog { position: fixed; inset: auto 0 0; margin: 0 auto; width: min(100%, 760px); max-width: 100%; max-height: 80dvh; overflow-y: auto; overscroll-behavior: contain; padding: 18px 16px calc(18px + env(safe-area-inset-bottom)); border: 1px solid #ece9e5; border-radius: 22px 22px 0 0; color: #403a35; background: #fff; }
+.addressDialog::backdrop { background: #20191566; }
+.dialogHeading { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+.dialogHeading h2 { margin: 0; }
+.addressOptions { display: grid; gap: 10px; }
+.addressOptions button { display: grid; grid-template-columns: 20px minmax(0, 1fr); align-items: center; gap: 12px; min-height: 64px; padding: 14px; border: 1px solid #dedad6; border-radius: 14px; background: #fff; color: #403a35; text-align: left; cursor: pointer; }
+.addressOptions button[aria-pressed="true"] { border-color: #ac3520; background: #fff3f0; }
+.addressOptions button:hover { border-color: #ac3520; }
+.addressOptions button[aria-pressed="true"] svg { color: #ac3520; }
+.addressOptions span { display: grid; gap: 4px; overflow-wrap: anywhere; }
+.addressOptions strong { font-size: 14px; }
+.addressOptions small { color: #746d65; font-size: 12px; }
+.merchant { margin: 4px 0 0; color: #59524b; font-size: 13px; font-weight: 550; overflow-wrap: anywhere; }
+.items > div { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 14px 0; border-bottom: 1px solid #f0eeeb; }
+.items > div:last-child { border: 0; padding-bottom: 0; }
+.itemDetails { min-width: 0; overflow-wrap: anywhere; }
+.itemDetails > strong { font-size: 14px; line-height: 1.5; }
+.items > div > strong { flex-shrink: 0; font-size: 14px; }
+.itemDetails ul { display: grid; gap: 3px; margin: 5px 0 0; padding: 0; list-style: none; color: #746d65; font-size: 12px; line-height: 1.5; }
+.itemDetails p { margin: 3px 0 0; color: #746d65; font-size: 12px; line-height: 1.5; white-space: pre-wrap; }
+.note { margin-top: 14px; padding-top: 14px; border-top: 1px solid #f0eeeb; }
+.note h3, .note label { display: block; margin: 0 0 8px; font-size: 14px; font-weight: 600; }
+.noteHeading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.noteHeading h3 { min-width: 0; margin: 0; }
+.noteHeading .noteEdit { flex-shrink: 0; white-space: nowrap; }
+.noteText { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; margin: 0; color: #746d65; font-size: 13px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.noteEdit, .noteActions button { min-width: 44px; min-height: 44px; padding: 6px 10px; border: 0; border-radius: 10px; color: #ac3520; background: none; font-size: 13px; cursor: pointer; }
+.noteEdit { padding-inline: 0; }
+.noteActions { display: flex; gap: 8px; margin-top: 10px; }
+.noteActions .noteSave { color: #fff; background: #ac3520; padding-inline: 16px; }
+.noteActions button:hover, .noteEdit:hover { text-decoration: underline; }
+.note textarea { width: 100%; max-width: 100%; min-height: 88px; padding: 12px; border: 1px solid #dedad6; border-radius: 14px; font: inherit; font-size: 16px; font-weight: 400; resize: vertical; }
+.note textarea:focus, .couponInput input:focus { border-color: #ac3520; }
+.helper { margin: 10px 0 0; color: #746d65; font-size: 12px; line-height: 1.5; }
+.promotion { display: grid; gap: 8px; font-size: 14px; }
+.promotion h3 { margin: 0 0 4px; font-size: 14px; font-weight: 600; }
+.promotionTrigger { width: 100%; min-width: 0; min-height: 48px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px; border: 1px solid #dedad6; border-radius: 12px; background: #fff; color: #403a35; text-align: left; font-size: 14px; cursor: pointer; }
+.promotionTrigger span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.promotionTrigger svg { flex-shrink: 0; color: #746d65; }
+.promotionTrigger:hover:not(:disabled) { border-color: #ac3520; background: #fff3f0; }
+.promotionTrigger:disabled, .couponInput button:disabled { color: #746d65; background: #f5f3f1; cursor: wait; }
+.section.discountSection { padding: 12px 16px; }
+.discountSection > h2 { margin-bottom: 4px; }
+.discountSection > .promotionTrigger { border: 0; padding: 8px 0; border-radius: 8px; }
+.coupon { margin-top: 18px; padding-top: 18px; border-top: 1px solid #f0eeeb; }
+.coupon > :is(label, span) { display: block; margin-bottom: 8px; font-size: 14px; }
+.couponInput { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+.couponInput input { width: 100%; min-width: 0; min-height: 44px; padding: 10px; border: 1px solid #dedad6; border-radius: 12px; font-size: 16px; }
+.couponInput button { height: 46px; padding: 10px 12px; border: 1px solid #ac3520; border-radius: 12px; color: #fff; background: #ac3520; font-size: 13px; font-weight: 600; white-space: nowrap; cursor: pointer; }
+.couponInput button:disabled { border-color: #dedad6; cursor: not-allowed; }
+.selectedDiscount { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 8px; padding: 8px 12px; border: 1px solid #ac3520; border-radius: 15px; background: #fff3f0; }
+.selectedDiscount > svg { flex-shrink: 0; color: #ac3520; }
+.selectedDiscount > span { flex: 1; }
+.selectedDiscount span { min-width: 0; overflow-wrap: anywhere; color: #7d2516; font-size: 13px; }
+.selectedDiscount strong, .selectedDiscount small { display: block; }
+.selectedDiscount small { margin-top: 3px; color: #746d65; font-size: 12px; }
+.couponError { margin: 8px 0 0; color: #912b19; font-size: 12px; line-height: 1.5; }
+.couponCancel { min-height: 44px; padding: 4px 0; border: 0; background: none; color: #ac3520; font-size: 12px; cursor: pointer; }
+.section.payment { padding-block: 12px; }
+.payment h2 { margin-bottom: 8px; }
+.paymentRow { display: flex; align-items: center; gap: 10px; }
+.paymentIcon { flex: 0 0 38px; width: 38px; height: 38px; display: grid; place-items: center; border-radius: 10px; color: #ac3520; background: #fff3f0; }
+.paymentRow > div { min-width: 0; overflow-wrap: anywhere; }
+.paymentRow strong { font-size: 14px; }
+.payment .helper { margin-top: 3px; }
+.selectedDiscount button { flex-shrink: 0; min-width: 44px; min-height: 44px; border: 0; background: none; color: #ac3520; font-size: 12px; cursor: pointer; }
+.totals { display: grid; gap: 12px; }
+.totals > div { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; font-size: 14px; }
+.totals span { min-width: 0; overflow-wrap: anywhere; }
+.totals strong { flex-shrink: 0; }
+.totals .grandTotal { padding-top: 14px; border-top: 1px solid #d8d1ca; font-size: 17px; font-weight: 700; }
+.grandTotal strong { color: #ac3520; font-size: 21px; }
+.confirmBar { position: fixed; z-index: 35; left: 50%; transform: translateX(-50%); bottom: calc(69px + env(safe-area-inset-bottom)); width: min(100%, 760px); display: grid; grid-template-columns: minmax(0, 1fr) minmax(155px, 1.2fr); align-items: center; gap: 12px; padding: 10px 16px; border-top: 1px solid #ece9e5; background: #fff; box-shadow: 0 -4px 18px #28241f08; }
+.confirmBar > div { min-width: 0; display: grid; gap: 2px; }
+.confirmBar span { color: #746d65; font-size: 12px; }
+.confirmBar strong { color: #ac3520; font-size: 22px; overflow-wrap: anywhere; }
+.confirmBar button { min-height: 54px; padding: 10px; border: 0; border-radius: 14px; background: #ac3520; color: #fff; font-size: 14px; font-weight: 650; cursor: pointer; }
+.confirmBar button:disabled { background: #ede4e0; color: #756761; cursor: not-allowed; }
+.confirmBar button[aria-busy="true"] { cursor: wait; }
+.confirmBar button:not(:disabled):hover { background: #912b19; }
+@media (min-width: 640px) { .addressDialog { inset: 0; margin: auto; width: min(560px, calc(100% - 32px)); height: fit-content; border-radius: 20px; } }
+/* Discount-only geometry; saved-address dialog and the checkout bar are unchanged. */
+.discountDialog { box-sizing: border-box; max-height: min(82dvh, var(--discount-visible-height, 82dvh)); scroll-padding-block: 80px 18px; }
+.discountDialog .dialogHeading { position: sticky; top: -18px; z-index: 1; padding-block: 8px; margin-top: -8px; margin-bottom: 18px; background: #fff; }
+.discountDialog .dialogHeading h2 { min-width: 0; overflow-wrap: anywhere; }
+.discountDialog .dialogHeading button { flex-shrink: 0; }
+.discountDialog .addressOptions strong { font-weight: 500; }
+.discountDialog .addressOptions button[aria-pressed="true"] strong { font-weight: 600; }
+.discountDialog .couponInput { align-items: center; scroll-margin-block: 80px 18px; }
+@media (max-width: 767px) {
+  .discountDialog { inset: auto 0 var(--discount-keyboard-offset, 0px); margin: 0 auto; width: 100%; height: auto; border-radius: 24px 24px 0 0; }
+}
+@media (min-width: 768px) {
+  .discountDialog { inset: 0; margin: auto; width: min(560px, calc(100% - 32px)); max-height: min(80dvh, var(--discount-visible-height, 80dvh)); height: fit-content; border-radius: 20px; }
+}

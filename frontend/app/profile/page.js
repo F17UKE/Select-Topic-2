@@ -1,6 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { customerErrorMessage } from '../../lib/customer-error.mjs';
+import Link from 'next/link';
 import { AppShell, LoadingCards, SignInCard } from '../../components/app-shell';
 import { CustomerDetailHeader } from '../../components/customer/detail-header';
 import { AddressCard, ProfileSummary } from '../../components/customer/profile-cards';
@@ -44,7 +46,7 @@ export default function ProfilePage() {
       setProfile({ displayName: profileResult.customer.display_name || '', phone: profileResult.customer.phone || '' });
       setAddresses(addressResult.addresses);
       setDormitories(dormitoryResult.dormitories);
-    }).catch((requestError) => { if (active) setError(requestError.message); });
+    }).catch((requestError) => { if (active) setError(customerErrorMessage(requestError)); });
     return () => { active = false; };
   }, [session.customer]);
 
@@ -55,7 +57,7 @@ export default function ProfilePage() {
       const result = await api('/api/customer/profile', { method: 'PATCH', body: JSON.stringify(profile) });
       session.setCustomer(result.customer);
       setMessage('บันทึกโปรไฟล์แล้ว');
-    } catch (requestError) { setError(requestError.message); }
+    } catch (requestError) { setError(customerErrorMessage(requestError)); }
     finally { setBusy(false); }
   }
 
@@ -77,7 +79,7 @@ export default function ProfilePage() {
       setAddressForm(emptyAddress); setEditingId(null);
       await loadProfile();
       setMessage(editingId ? 'แก้ไขที่อยู่แล้ว' : 'เพิ่มที่อยู่แล้ว');
-    } catch (requestError) { setError(requestError.message); }
+    } catch (requestError) { setError(customerErrorMessage(requestError)); }
     finally { setBusy(false); }
   }
 
@@ -87,7 +89,7 @@ export default function ProfilePage() {
       const result = await api(`/api/customer/addresses/${id}/default`, { method: 'PUT' });
       setAddresses(result.addresses);
       setMessage('เปลี่ยนที่อยู่หลักแล้ว');
-    } catch (requestError) { setError(requestError.message); }
+    } catch (requestError) { setError(customerErrorMessage(requestError)); }
     finally { setBusy(false); }
   }
 
@@ -98,6 +100,7 @@ export default function ProfilePage() {
   return (
     <AppShell variant="profile" header={profileHeader}>
       <ProfileSummary customer={session.customer} />
+      <nav className="profile-shortcuts" aria-label="ทางลัดบัญชี"><Link href="/favorites"><Icon name="heart" size={20} /><span><strong>ร้านโปรด</strong><small>ร้านที่บันทึกไว้</small></span><Icon name="arrow" size={17} /></Link><Link href="/notifications"><Icon name="bell" size={20} /><span><strong>การแจ้งเตือน</strong><small>อัปเดตสถานะออเดอร์</small></span><Icon name="arrow" size={17} /></Link><Link href="/promotions"><Icon name="receipt" size={20} /><span><strong>โปรโมชัน</strong><small>สิทธิ์ที่ใช้ได้ตอนนี้</small></span><Icon name="arrow" size={17} /></Link></nav>
 
       <form className="profile-form-card" onSubmit={saveProfile}>
         <div className="profile-card-heading"><div><h2>ข้อมูลส่วนตัว</h2><p>แก้ไขข้อมูลสำหรับการติดต่อ</p></div><span><Icon name="user" size={20} /></span></div>

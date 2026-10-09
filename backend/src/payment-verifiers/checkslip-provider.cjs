@@ -10,12 +10,13 @@ function safeLog(logger, level, fields) {
   if (typeof method === 'function') method.call(logger, fields, 'CheckSlip verification');
 }
 
-function requestMultipart({ url, apiKey, connectTimeoutMs, requestTimeoutMs, fileBuffer, contentType, requestId }) {
+function requestMultipart({ url, apiKey, connectTimeoutMs, requestTimeoutMs, fileBuffer, contentType, requestId,
+  fields = { log: 'false' }, fileField = 'files', bearer = false }) {
   const boundary = `----select-topic-2-${crypto.randomBytes(12).toString('hex')}`;
   const extension = contentType === 'image/png' ? 'png' : contentType === 'image/webp' ? 'webp' : 'jpg';
   const before = Buffer.from(
-    `--${boundary}\r\nContent-Disposition: form-data; name="log"\r\n\r\nfalse\r\n`
-    + `--${boundary}\r\nContent-Disposition: form-data; name="files"; filename="slip.${extension}"\r\n`
+    Object.entries(fields).map(([name, value]) => `--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`).join('')
+    + `--${boundary}\r\nContent-Disposition: form-data; name="${fileField}"; filename="slip.${extension}"\r\n`
     + `Content-Type: ${contentType}\r\n\r\n`,
   );
   const after = Buffer.from(`\r\n--${boundary}--\r\n`);
@@ -38,7 +39,7 @@ function requestMultipart({ url, apiKey, connectTimeoutMs, requestTimeoutMs, fil
       headers: {
         'content-type': `multipart/form-data; boundary=${boundary}`,
         'content-length': body.length,
-        'x-authorization': apiKey,
+        ...(bearer ? { authorization: `Bearer ${apiKey}` } : { 'x-authorization': apiKey }),
         'x-request-id': requestId,
         accept: 'application/json',
       },

@@ -2,13 +2,34 @@ const { buildOrderFlexMessage } = require('./line-flex-messages.cjs');
 const { supportedEvents } = require('./line-order-notifier.cjs');
 
 function createNotificationOutbox({ db, messaging, publicAppUrl, logger = console, now = Date.now }) {
+  const customerCopy = {
+    PAYMENT_VERIFIED: ['ชำระเงินสำเร็จ', 'ตรวจสอบการชำระเงินแล้ว ร้านค้าจะเริ่มรับออเดอร์'],
+    ORDER_ACCEPTED: ['ร้านรับออเดอร์แล้ว', 'ร้านค้ายืนยันออเดอร์ของคุณแล้ว'],
+    PREPARING: ['กำลังเตรียมอาหาร', 'ร้านค้ากำลังจัดเตรียมรายการอาหาร'],
+    READY: ['อาหารพร้อมแล้ว', 'ออเดอร์พร้อมรับหรือพร้อมส่งแล้ว'],
+    DELIVERING: ['กำลังจัดส่ง', 'ไรเดอร์กำลังนำอาหารไปส่งให้คุณ'],
+    COMPLETED: ['จัดส่งสำเร็จ', 'ออเดอร์เสร็จสมบูรณ์ ขอบคุณที่ใช้บริการ'],
+    REJECTED: ['ร้านไม่สามารถรับออเดอร์', 'ออเดอร์ถูกปฏิเสธ โปรดตรวจสอบรายละเอียด'],
+  };
   async function enqueueOrderEvent(trx, event, orderId) {
     if (!supportedEvents.has(event)) throw new Error(`Unsupported notification event: ${event}`);
     const order = await trx('orders as o')
       .join('customers as c', 'c.id', 'o.customer_id')
       .join('merchants as m', 'm.id', 'o.merchant_id')
-      .select('o.id', 'o.order_code', 'o.total_amount', 'o.status', 'c.line_user_id', 'm.store_name')
+      .select('o.id', 'o.customer_id', 'o.order_code', 'o.total_amount', 'o.status', 'c.line_user_id', 'm.store_name')
       .where({ 'o.id': orderId }).first();
+    if (!order) return { queued: false, no_order: true };
+    const copy = customerCopy[event];
+    if (copy) {
+      await trx('customer_notifications').insert({
+        customer_id: order.customer_id,
+        type: event,
+        title: copy[0],
+        message: `${copy[1]} · ${order.order_code}`,
+        order_id: order.id,
+        event_key: `${event}:${order.id}`,
+      }).onConflict('event_key').ignore();
+    }
     if (!order?.line_user_id) return { queued: false, no_recipient: true };
     const inserted = await trx('notification_outbox').insert({
       event_type: event, order_id: orderId, recipient_line_user_id: order.line_user_id,

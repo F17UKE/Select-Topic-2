@@ -57,18 +57,18 @@ function boolean(env, name, fallback) {
   throw new Error(`${name} must be true or false`);
 }
 
-function paymentConfig(env = process.env) {
+function paymentConfig(env = process.env, { storageOnly = false } = {}) {
   const production = env.NODE_ENV === 'production';
   const verificationMode = env.PAYMENT_VERIFICATION_MODE || (production ? 'checkslip' : 'mock');
-  if (!['mock', 'checkslip'].includes(verificationMode)) {
-    throw new Error('PAYMENT_VERIFICATION_MODE must be mock or checkslip');
+  if (!['mock', 'checkslip', 'easyslip'].includes(verificationMode)) {
+    throw new Error('PAYMENT_VERIFICATION_MODE must be mock, checkslip or easyslip');
   }
   if (production && verificationMode === 'mock') {
     throw new Error('Mock payment verification is forbidden in production');
   }
   let checkslipApiUrl = null;
   let checkslipApiKey = null;
-  if (verificationMode === 'checkslip') {
+  if (!storageOnly && verificationMode === 'checkslip') {
     const missing = ['CHECKSLIP_API_URL', 'CHECKSLIP_API_KEY'].filter((name) => !env[name]);
     if (missing.length) throw new Error(`Missing CheckSlip environment variables: ${missing.join(', ')}`);
     try {
@@ -84,6 +84,16 @@ function paymentConfig(env = process.env) {
       throw new Error('CHECKSLIP_API_URL must use HTTPS in production');
     }
     checkslipApiKey = env.CHECKSLIP_API_KEY;
+  }
+  const easyslipApiBaseUrl = env.EASYSLIP_API_BASE_URL || 'https://api.easyslip.com/v2';
+  let easyslipMerchantAccounts = {};
+  if (!storageOnly && verificationMode === 'easyslip') {
+    if (!env.EASYSLIP_API_KEY) throw new Error('EASYSLIP_API_KEY is required');
+    if (easyslipApiBaseUrl !== 'https://api.easyslip.com/v2') throw new Error('Invalid EASYSLIP_API_BASE_URL');
+    try { easyslipMerchantAccounts = JSON.parse(env.EASYSLIP_MERCHANT_ACCOUNTS || '{}'); }
+    catch { throw new Error('Invalid EASYSLIP_MERCHANT_ACCOUNTS'); }
+    if (!easyslipMerchantAccounts || Array.isArray(easyslipMerchantAccounts)
+      || typeof easyslipMerchantAccounts !== 'object') throw new Error('Invalid EASYSLIP_MERCHANT_ACCOUNTS');
   }
   const storageMode = env.SLIP_STORAGE_MODE || (production ? 'object' : 'local');
   if (!['local', 'object'].includes(storageMode)) throw new Error('SLIP_STORAGE_MODE must be local or object');
@@ -126,7 +136,14 @@ function paymentConfig(env = process.env) {
   return {
     verificationMode,
     storageRoot: path.resolve(env.SLIP_STORAGE_DIR || path.resolve(__dirname, '../storage')),
+    // Preserve the shared legacy asset limit; only payment slips get the provider cap.
     maxUploadBytes: integer(env, 'SLIP_MAX_BYTES', 5 * 1024 * 1024, 1024, 10 * 1024 * 1024),
+    slipMaxUploadBytes: Math.min(4 * 1024 * 1024, integer(env, 'SLIP_MAX_BYTES', 4 * 1024 * 1024, 1024, 10 * 1024 * 1024)),
+    easyslipApiBaseUrl,
+    easyslipApiKey: env.EASYSLIP_API_KEY || null,
+    easyslipMerchantAccounts,
+    easyslipConnectTimeoutMs: integer(env, 'EASYSLIP_CONNECT_TIMEOUT_MS', 3000, 100, 30000),
+    easyslipRequestTimeoutMs: integer(env, 'EASYSLIP_REQUEST_TIMEOUT_MS', 10000, 500, 60000),
     retentionHours: integer(env, 'PAYMENT_PRIVATE_RETENTION_HOURS', 24, 1, 168),
     storageMode,
     objectStorageEndpoint,

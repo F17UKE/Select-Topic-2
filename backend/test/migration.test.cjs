@@ -55,3 +55,30 @@ test('production hardening is additive and leaves the baseline migration unchang
   assert.match(migration, /merchant_staffs_active_username_global/);
   assert.doesNotMatch(migration, /dropTableIfExists\('(orders|merchant_staffs)'/);
 });
+
+test('admin backoffice migration is additive and includes security/content foundations', () => {
+  const migration = fs.readFileSync(
+    path.resolve(__dirname, '../migrations/202610050003_admin_backoffice.cjs'), 'utf8',
+  );
+  for (const table of ['platform_admins', 'platform_admin_sessions', 'audit_logs', 'banners', 'promotions', 'system_settings']) {
+    assert.match(migration, new RegExp(`createTable\\('${table}'`));
+  }
+  assert.match(migration, /platform_admins_active_username_unique/);
+  assert.match(migration, /csrf_token_hash/);
+  assert.match(migration, /table\.boolean\('is_active'\).*defaultTo\(true\)/);
+  assert.doesNotMatch(migration, /dropTableIfExists\('(orders|payments|customers|merchants)'/);
+});
+
+test('customer engagement migration is additive and preserves one discount source per order', () => {
+  const migration = fs.readFileSync(
+    path.resolve(__dirname, '../migrations/202610070006_customer_engagement.cjs'), 'utf8',
+  );
+  for (const table of ['reviews', 'customer_favorite_merchants', 'coupons', 'coupon_redemptions', 'customer_notifications']) {
+    assert.match(migration, new RegExp(`createTable\\('${table}'`));
+  }
+  assert.match(migration, /orders_discount_source_check/);
+  assert.match(migration, /coupon_id/);
+  assert.match(migration, /coupon_snapshot/);
+  assert.match(migration, /coupons_active_code_unique/);
+  assert.doesNotMatch(migration, /dropTableIfExists\('(orders|payments|customers|merchants)'/);
+});

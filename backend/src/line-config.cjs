@@ -3,7 +3,7 @@ function oneOf(value, allowed, name) {
   return value;
 }
 
-function lineIntegrationConfig(env = process.env) {
+function lineIntegrationConfig(env = process.env, { validateLogin = true } = {}) {
   const authMode = env.CUSTOMER_AUTH_MODE || (env.NODE_ENV === 'production' ? 'line' : 'mock');
   const messagingMode = oneOf(
     env.LINE_MESSAGING_MODE || (env.NODE_ENV === 'production' ? 'real' : 'disabled'),
@@ -15,10 +15,10 @@ function lineIntegrationConfig(env = process.env) {
   const liffId = env.LINE_LIFF_ID || '';
   const accessToken = env.LINE_MESSAGING_CHANNEL_ACCESS_TOKEN || '';
   const webhookSecret = env.LINE_WEBHOOK_SECRET || channelSecret;
-  if (authMode === 'line' && (!channelId || !liffId)) {
+  if (validateLogin && authMode === 'line' && (!channelId || !liffId)) {
     throw new Error('LINE_CHANNEL_ID and LINE_LIFF_ID are required when CUSTOMER_AUTH_MODE=line');
   }
-  if (env.NODE_ENV === 'production' && authMode === 'line' && !webhookSecret) {
+  if (validateLogin && env.NODE_ENV === 'production' && authMode === 'line' && !webhookSecret) {
     throw new Error('LINE_CHANNEL_SECRET or LINE_WEBHOOK_SECRET is required in production');
   }
   if (messagingMode === 'real' && !accessToken) {

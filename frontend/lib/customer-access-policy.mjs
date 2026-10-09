@@ -1,6 +1,7 @@
 export function isStaffBrowserPath(pathname) {
   return pathname === '/merchant' || pathname.startsWith('/merchant/')
-    || pathname === '/rider' || pathname.startsWith('/rider/');
+    || pathname === '/rider' || pathname.startsWith('/rider/')
+    || pathname === '/admin' || pathname.startsWith('/admin/');
 }
 
 export function resolveCustomerBrowserAccess({ pathname, authMode, isInClient }) {

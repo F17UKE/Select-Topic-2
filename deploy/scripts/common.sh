@@ -2,6 +2,17 @@
 set -Eeuo pipefail
 
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+SERVICE_USER=select-topic-2
+BACKEND_ENV_FILE=/etc/select-topic-2/backend.env
+FRONTEND_ENV_FILE=/etc/select-topic-2/frontend.env
+
+if [[ "$EUID" -eq 0 ]]; then
+  ROOT=()
+else
+  ROOT=(sudo)
+fi
+
+run_root() { "${ROOT[@]}" "$@"; }
 
 require_ubuntu() {
   if [[ ! -r /etc/os-release ]]; then echo 'Ubuntu 24.04 is required.' >&2; exit 1; fi
@@ -10,7 +21,9 @@ require_ubuntu() {
   if [[ "$ID" != ubuntu || "$VERSION_ID" != 24.04 ]]; then
     echo 'These scripts support Ubuntu 24.04 only.' >&2; exit 1
   fi
-  if [[ "$EUID" -eq 0 ]]; then echo 'Run as the deployment user with sudo access, not root.' >&2; exit 1; fi
+  if [[ "$EUID" -ne 0 ]]; then
+    command -v sudo >/dev/null || { echo 'Run as root or install sudo for the deployment user.' >&2; exit 1; }
+  fi
 }
 
 require_node() {
@@ -35,21 +48,35 @@ install_node_if_missing() {
     curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
       "https://nodejs.org/dist/v${version}/SHASUMS256.txt" -o SHASUMS256.txt
     grep "  ${archive}\$" SHASUMS256.txt | sha256sum --check --status
-    sudo tar -xJf "$archive" -C /opt
+    run_root tar -xJf "$archive" -C /opt
     for executable in node npm npx; do
-      sudo ln -sfn "/opt/node-v${version}-linux-${arch}/bin/${executable}" "/usr/local/bin/${executable}"
+      run_root ln -sfn "/opt/node-v${version}-linux-${arch}/bin/${executable}" "/usr/local/bin/${executable}"
     done
   )
   require_node
 }
 
-ensure_env() {
-  local service="$1"
-  if [[ ! -f "$REPO_ROOT/$service/.env" ]]; then
-    (umask 077; cp "$REPO_ROOT/$service/.env.example" "$REPO_ROOT/$service/.env")
-    echo "Created $service/.env. Review it before deploying."
-  fi
-  chmod 600 "$REPO_ROOT/$service/.env"
+require_standard_release_path() {
+  [[ "$REPO_ROOT" == /opt/select-topic-2 ]] || {
+    echo 'Production releases must be checked out at /opt/select-topic-2.' >&2
+    exit 1
+  }
 }
 
-pm2_local() { "$REPO_ROOT/node_modules/.bin/pm2" "$@"; }
+ensure_service_user() {
+  if ! id -u "$SERVICE_USER" >/dev/null 2>&1; then
+    run_root useradd --system --home-dir /nonexistent --shell /usr/sbin/nologin "$SERVICE_USER"
+  fi
+}
+
+install_service_unit() {
+  local name="$1"
+  run_root install -m 0644 "$REPO_ROOT/deploy/systemd/${name}.service" "/etc/systemd/system/${name}.service"
+  run_root systemctl daemon-reload
+}
+
+npm_with_backend_env() {
+  local npm_cli
+  npm_cli="$(readlink -f "$(command -v npm)")"
+  node --env-file="$BACKEND_ENV_FILE" "$npm_cli" "$@"
+}

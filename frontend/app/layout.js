@@ -7,7 +7,7 @@ import { CartProvider } from '../lib/cart';
 import { CustomerAccessGate } from '../components/customer-access-gate';
 
 export const metadata = {
-  title: 'Select Topic 2 | ร้านอาหารใกล้คุณ',
+  title: 'อร่อยใกล้คุณ | สั่งอาหาร',
   description: 'ค้นหาร้าน เมนู และค่าส่งถึงหอพักของคุณ',
 };
 

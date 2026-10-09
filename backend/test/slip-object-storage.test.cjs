@@ -75,6 +75,29 @@ test('S3-compatible storage supports head and delete without exposing a public U
   ]);
 });
 
+test('banner objects use an isolated safe namespace and can be read privately', async () => {
+  const client = fakeClient(async (command) => command.constructor.name === 'GetObjectCommand' ? {
+    Body: { transformToByteArray: async () => png }, ContentType: 'image/png',
+  } : {});
+  const storage = createObjectSlipStorage(config, { client, randomUUID: () => uuid, now: () => Date.UTC(2026, 9, 5) });
+  const stored = await storage.put({ buffer: png, contentType: 'image/png', namespace: 'banners' });
+  assert.equal(stored.objectKey, `banners/2026/10/${uuid}.png`);
+  assert.equal(client.commands[0].input.ACL, undefined);
+  const image = await storage.read(stored.objectKey);
+  assert.equal(image.contentType, 'image/png');
+  assert.deepEqual(image.buffer, png);
+  assert.deepEqual(client.commands.map((command) => command.constructor.name), ['PutObjectCommand', 'GetObjectCommand']);
+});
+
+test('finance proof uses private permanent namespace with no ACL or public URL',async()=>{
+  const client=fakeClient(async command=>command.constructor.name==='GetObjectCommand'?{Body:{transformToByteArray:async()=>png},ContentType:'image/png'}:{});
+  const storage=createObjectSlipStorage(config,{client,randomUUID:()=>uuid,now:()=>Date.UTC(2026,9,9)});
+  const proof=await storage.put({buffer:png,contentType:'image/png',namespace:'finance-proofs'});
+  assert.equal(proof.objectKey,`finance-proofs/2026/10/${uuid}.png`);
+  assert.equal(client.commands[0].input.ACL,undefined);assert.equal(storage.publicUrl,undefined);
+  assert.deepEqual((await storage.read(proof.objectKey)).buffer,png);
+});
+
 test('upload, delete and non-404 head failures are propagated', async () => {
   const uploadError = Object.assign(new Error('upload failed'), { code: 'S3_UPLOAD_FAILED' });
   const uploadStorage = createObjectSlipStorage(config, {
@@ -117,4 +140,15 @@ test('retention logs only safe error metadata when provider deletion fails', asy
   assert.equal(await retention.purgeBatch(), 0);
   assert.equal(JSON.stringify(entries).includes(secret), false);
   assert.deepEqual(entries[0], ['Slip retention cleanup failed', { slip_id: 42, code: 'S3_ACCESS_DENIED' }]);
+});
+
+test('merchant catalog namespaces keep tenant keys private and safely readable/deletable',async()=>{
+ const client=fakeClient(async command=>command.constructor.name==='GetObjectCommand'?{Body:{transformToByteArray:async()=>png},ContentType:'image/png'}:{});
+ const storage=createObjectSlipStorage(config,{client,randomUUID:()=>uuid,now:Date.now});
+ for(const namespace of ['menu','merchant']){
+  const saved=await storage.put({namespace,merchantId:12,buffer:png,contentType:'image/png'});
+  assert.equal(saved.objectKey,`${namespace}/12/${uuid}.png`);assert.equal(client.commands.at(-1).input.ACL,undefined);
+  assert.deepEqual((await storage.read(saved.objectKey)).buffer,png);await storage.remove(saved.objectKey);
+ }
+ await assert.rejects(storage.put({namespace:'menu',merchantId:'../slips',buffer:png,contentType:'image/png'}),/Invalid merchant/);
 });

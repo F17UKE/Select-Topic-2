@@ -109,6 +109,33 @@ test('rider dispatch permissions, isolation, locking and delivery state machine'
       await rider.get('/api/merchant/riders').expect(403);
     });
 
+    await t.test('portal boundaries reject forged roles and tenant parameters without internal permission text', async () => {
+      const order = await createReadyOrder();
+      const denied = await rider.get('/api/merchant/orders?role=MANAGER&merchant_id=1')
+        .set('X-Staff-Role', 'MANAGER').expect(403);
+      assert.doesNotMatch(denied.body.message, /cannot perform|VIEW|ASSIGN_RIDER/);
+      for (const agent of [manager, cashier, kitchen]) {
+        await agent.get('/api/rider/orders').expect(403);
+        await agent.post(`/api/rider/orders/${order.id}/start-delivery`).send({ role: 'RIDER', staffId: seededRider.id }).expect(403);
+      }
+      await rider.post(`/api/merchant/orders/${order.id}/assign-rider`)
+        .send({ role: 'MANAGER', merchant_id: localMerchant.id, riderId: seededRider.id }).expect(403);
+      const forged = request(appFor(db, 'local_rider'));
+      await forged.get('/api/rider/orders').set('Cookie', 'merchant_staff_session=forged; role=MANAGER').expect(401);
+    });
+
+    await t.test('inactive or changed-role rider loses authority on the next request, despite existing session', async () => {
+      const temporary = await addStaff(localMerchant.id, 'integration_rider_session');
+      const agent = await login(db, temporary.username);
+      const order = await createReadyOrder();
+      await manager.post(`/api/merchant/orders/${order.id}/assign-rider`).send({ riderId: temporary.id }).expect(200);
+      await db('merchant_staffs').where({ id: temporary.id }).update({ role: 'KITCHEN' });
+      await agent.post(`/api/rider/orders/${order.id}/start-delivery`).send({ role: 'RIDER' }).expect(403);
+      await db('merchant_staffs').where({ id: temporary.id }).update({ role: 'RIDER', is_active: false });
+      await agent.post(`/api/rider/orders/${order.id}/start-delivery`).expect(401);
+      assert.equal((await db('orders').where({ id: order.id }).first()).status, 'READY');
+    });
+
     await t.test('only manager assigns an active rider from the order merchant', async () => {
       const order = await createReadyOrder();
       for (const agent of [cashier, kitchen, rider]) {

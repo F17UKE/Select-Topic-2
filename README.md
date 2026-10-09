@@ -1,10 +1,68 @@
-# Select-Topic-2 — Customer, merchant and rider order flow
+# Select-Topic-2 — Food delivery platform and Admin Backoffice
+
+## Marketplace Finance — local workflow
+
+Migration 008 adds Finance without switching payment collection automatically. Read [Finance report and operator guide](docs/FINANCE_SPRINT_REPORT.md), [exact schema](docs/FINANCE_SCHEMA_IMPLEMENTED.md) and [verification](VERIFICATION.md) before enabling centralized mode.
+
+Pages: /merchant/finance (MANAGER), /admin/finance (SUPER_ADMIN / FINANCE). Keep the existing local startup scripts. After checking the local target/backup, use npm run db:migrate --workspace backend, then npm run db:status --workspace backend and npm run db:verify-local --workspace backend. Do not run local seed on production.
+
+Finance invariant/demo tests (Windows existing portable PostgreSQL):
+
+~~~powershell
+$env:LOCAL_PG_BIN="$env:LOCALAPPDATA\select-topic-2\postgresql-16.15-tar\pgsql\bin"
+node scripts/isolated-local-verification.cjs --test backend/test/finance.integration.test.cjs
+node scripts/isolated-local-verification.cjs
+~~~
+
+Tests clone the local DB, isolate providers, and clean only their own disposable schemas. They never seed or erase public financial balances. Full suites use separate clones because financial history is immutable.
+
+Optional scheduled work: npm run finance:scheduled --workspace backend. Run with the correct environment from an external scheduler (e.g. hourly). Only opted-in merchants produce one request per UTC three-day window, subject to server holds/quota/balance rules. The command also expires paid ads. It does not send bank transfers, install a scheduler or bypass Super Admin confirmation.
+
+Payout account verification/change imposes a 24-hour hold; successful payout imposes a 72-hour cooldown. Do not bypass these timestamps for public/demo convenience. Confirm Paid requires the external bank reference after independently confirming actual transfer. Private proof is optional and never served publicly. Back up the persistent encryption key and database securely; do not commit .runtime, keys, dumps or uploads.
+
+
+Admin Integration Settings: `/admin/settings/integrations` (Super Admin only).
+See [setup, encrypted secrets, precedence and provider verification](docs/ADMIN_INTEGRATION_SETTINGS.md).
+Additive migration 007 adds one private integration-settings table. Development automatically creates
+and reuses `backend/.runtime/integration-settings.key` (ignored by Git); no Owner key setup is needed.
+Production requires `INTEGRATION_SETTINGS_ENCRYPTION_KEY` or an existing persistent
+`INTEGRATION_SETTINGS_KEY_FILE` outside Git. ENV keys take priority. Existing ENV fallbacks
+remain supported. Platform PromptPay configuration is stored only and does not replace merchant QR
+recipients. Finance remains frozen. Real provider tests require a separate explicit action.
+
+Phase J production-preparation documentation: [system architecture](SYSTEM_ARCHITECTURE.md),
+[production deployment checklist](DEPLOYMENT_CHECKLIST.md), [local demo script](DEMO_SCRIPT.md),
+[database schema](DATABASE_SCHEMA.md) and [verification record](VERIFICATION.md).
+
+Release-fix verification (2026-10-09): run `node scripts/isolated-local-verification.cjs` for the
+full backend suite and mutating local smoke flows without writing to the public demo tables.
+Requires the existing portable PostgreSQL tools; override their bin directory with `LOCAL_PG_BIN`
+if necessary. It creates/removes a disposable test schema and checks that demo data is unchanged.
+See [current results and limitations](VERIFICATION.md).
+
+Customer and staff server sessions expire after 8 hours, matching their cookie lifetime;
+Admin session policy is separate and unchanged. Production deployment validates only the selected
+payment provider: `easyslip` needs `EASYSLIP_API_KEY` and valid `EASYSLIP_MERCHANT_ACCOUNTS`, while
+`checkslip` needs `CHECKSLIP_API_URL` and `CHECKSLIP_API_KEY`. Mock is forbidden in production.
+The HTTPS template uses `listen 443 ssl http2` for Ubuntu 24.04's Nginx 1.24; run `nginx -t` on the
+rendered config with real certificate paths before enabling it. This local phase does not deploy.
+
+Phase F (Local): start/status/stop portable DB with `npm run start-db`, `npm run status-db`,
+`npm run stop-db`. See [local management](deploy/local/README.md) and [verification](VERIFICATION.md).
+Migration 004 adds immutable promotion snapshots and redemption records; migrations 001–003 stay unchanged.
+Checkout requests an authoritative quote via `POST /api/orders/quote`, then revalidates on `POST /api/orders`.
+`GET /api/promotions?merchantId=...` and `GET /api/promotions/:id` require a customer session.
+Suspended merchants reject new checkout/orders, while staff can still fulfill existing orders.
+Published banners respect start/end dates and sorting; SCHEDULED/DRAFT require publication before
+becoming customer-visible. Home displays eligible banners in a swipe carousel with dots (no autoplay) and has an image/API failure fallback.
+`npm run test:smoke:local` includes both ordinary and discounted payment-to-delivery flows.
 
 Next.js + Express + Knex/PostgreSQL สำหรับ Cloud Lab 3 Instances โดยรอบปัจจุบันเพิ่ม
 Customer auth, profile/address, store/menu browsing, client-side cart, checkout,
 transactional order creation, PromptPay/slip verification พร้อม mock และ SlipOK Check Slip
-adapter, merchant KDS, rider dispatch/delivery completion และ LINE integration abstraction แล้ว
-การตรวจด้วย LINE/CheckSlip credential จริงและ object-storage adapter จริงยังไม่ได้ทำ
+adapter, merchant KDS, rider dispatch/delivery completion, LINE integration, S3-compatible
+object storage และ Central Admin Backoffice แล้ว การตรวจด้วย LINE/CheckSlip/object-storage
+credential จริงยังต้องทำกับ provider ของ production
 อ่าน [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md), [DATABASE_SCHEMA.md](DATABASE_SCHEMA.md)
 และ [schema review](database/SCHEMA_REVIEW.md) ก่อนเปลี่ยน schema หรือรัน migration
 
@@ -19,7 +77,7 @@ Browser -> Frontend Nginx :80 (HTTPS :443 ก่อนเปิดใช้ง�
                  |-- /api/* -> Express 10.0.7.6:3001
                  |-- /api/webhooks/line -> Express 10.0.7.6:3001 (LINE signature required)
                  `-- /webhooks/line -> Express 10.0.7.6:3001 (LINE-compatible alias)
-Backend 10.0.7.6 -> PostgreSQL <DB_PRIVATE_HOST>:5432
+Backend 10.0.7.6 -> PostgreSQL 10.0.7.7:5432
 ```
 
 Frontend instance: `10.0.7.5`, backend instance: `10.0.7.6`.
@@ -29,32 +87,32 @@ Frontend ไม่มี DB credentials, `pg`, `knex` หรือการเ�
 ```text
 frontend/                Next.js App Router + Tailwind, customer/store/cart/order pages
 backend/src/             Express customer/store/order/payment/merchant APIs and auth adapters
-backend/migrations/      Schema V3 baseline + additive production-hardening migration (23 tables)
+backend/migrations/      Schema V3 baseline + additive migrations 002–006 (36 application tables)
 backend/seeds/           Idempotent local-development seed data
 backend/test/            Health/config/schema SQL tests
 database/SCHEMA_REVIEW.md บันทึกการอนุมัติและขอบเขต Schema V3
 deploy/local/            Loopback-only PostgreSQL 16 for local development
 deploy/nginx/            Frontend reverse proxy
-deploy/pm2/              แยก ecosystem ของ frontend และ backend
+deploy/systemd/          single-process frontend/backend services with restart/start-on-boot
 deploy/scripts/          setup/deploy แยกเครื่อง + verification
 scripts/                 Architecture tests + process/local-feature smoke tests
 .github/workflows/       Verification บน Ubuntu; ไม่ deploy หรือ migrate
 ```
 
 ใช้ npm workspaces และ `package-lock.json` เดียว แต่ติดตั้งเฉพาะ workspace ของแต่ละเครื่อง
-PM2 อยู่ root เพื่อใช้เวอร์ชันที่ล็อกไว้ ไม่ต้องลง global PM2
+Production ใช้ systemd ของ Ubuntu โดยตรง; local development scripts ไม่ต้องใช้ process manager
 
 ## ข้อมูลที่ต้องใส่เอง
 
 | รายการ | ใช้ที่ไหน |
 | --- | --- |
 | SSH host/port/user/key ของ frontend และ backend พร้อมคำยืนยัน deploy | สำหรับรอบ deploy ภายหลัง; อย่าใส่ private key ลง repo |
-| PostgreSQL private host, database name, user, password | `backend/.env` บน backend เท่านั้น |
+| PostgreSQL private host, database name, user, password | `/etc/select-topic-2/backend.env` บน backend เท่านั้น |
 | SSL requirement และ CA certificate ถ้า provider กำหนด | `DB_SSL_MODE=verify-full`, `DB_SSL_CA_FILE` |
-| `HOST=10.0.7.6`, `PORT=3001` | `backend/.env` สำหรับ Cloud |
+| `HOST=10.0.7.6`, `PORT=3001` | `/etc/select-topic-2/backend.env` สำหรับ Cloud |
 | Domain/public frontend address และ TLS certificate | Nginx เมื่อจะเปิด HTTPS |
-| LINE channel ID/secret, LIFF ID, Messaging API access token และ webhook secret | `backend/.env` เท่านั้น; ห้ามใส่ใน frontend หรือ repo |
-| SlipOK branch Check Slip URL และ API key | `CHECKSLIP_API_URL`, `CHECKSLIP_API_KEY` ใน `backend/.env` เท่านั้น |
+| LINE channel ID/secret, LIFF ID, Messaging API access token และ webhook secret | `/etc/select-topic-2/backend.env` เท่านั้น; ห้ามใส่ใน frontend หรือ repo |
+| SlipOK branch Check Slip URL และ API key | `CHECKSLIP_API_URL`, `CHECKSLIP_API_KEY` ใน `/etc/select-topic-2/backend.env` เท่านั้น |
 | Schema changes หลัง V3 | ต้องสร้าง additive migration ใหม่หลัง baseline ถูกใช้งาน |
 
 Network policy ที่ต้องตรวจสอบก่อน deploy (ไม่มีสคริปต์แก้ firewall):
@@ -67,6 +125,10 @@ Network policy ที่ต้องตรวจสอบก่อน deploy (�
   โดยผู้ดูแล DB; ไม่ใช้ `trust` หรือ `0.0.0.0/0`
 
 ## 1. Local development / verification
+
+เครื่อง Windows นี้ใช้ portable PostgreSQL เดิมที่ `127.0.0.1:5432` และ `pgdata-v3` ตาม
+ignored `backend/.env` ให้ใช้ [Windows portable instructions](deploy/local/README.md)
+ก่อน Docker workflow ด้านล่าง ห้าม copy example ทับ `.env` ที่ใช้งานได้อยู่แล้ว
 
 ต้องมี Node 22.19+ ในสาย 22.x หรือ Node 24.x; `.nvmrc` ล็อก 22.23.3 สำหรับ Ubuntu setup/CI
 
@@ -84,6 +146,7 @@ npm run db:verify-local --workspace backend
 npm run verify
 npm run test:smoke
 npm run test:smoke:local
+npm run test:smoke:final
 ```
 
 Windows PowerShell ใช้ `Copy-Item` แทน `cp` ได้ และใช้ `npm.cmd` ถ้า execution policy
@@ -146,6 +209,13 @@ Production guard ไม่ยอมเริ่มเมื่อ `NODE_ENV=prod
 ใน production, regenerate session หลัง login และ rate limit 5 ครั้งต่อ IP+username ใน 15 นาที
 บัญชี seed ทุก role ใช้รหัส local-only `local-development-only` และห้ามนำไปใช้บน Cloud
 
+Admin Backoffice ใช้ session แยกจาก customer และ merchant ที่ `/admin/login` Local seed สร้าง
+`local_super_admin` พร้อมรหัส synthetic `local-admin-only` เฉพาะฐานข้อมูล
+`select_topic_2_local` บน loopback เท่านั้น Admin session เก็บ token แบบ hash ใน PostgreSQL,
+cookie เป็น HTTP-only/SameSite=Lax/Secure ใน production, write API ตรวจ CSRF และ backend RBAC
+ทุกครั้ง Login rate limit 5 ครั้งต่อ IP+username ใน 15 นาทีเป็น process-local จึงควรใช้
+rate limiter ที่ Nginx/edge เพิ่มเมื่อรันหลาย backend instances
+
 Payment mock ใช้ได้เฉพาะ development/test และ production guard จะหยุด process ทันทีถ้า
 `NODE_ENV=production` คู่กับ `PAYMENT_VERIFICATION_MODE=mock` ไฟล์สลิป local อยู่ใต้
 `backend/storage/slips/` ซึ่งไม่ถูก serve เป็น public file; database เก็บเฉพาะ object key
@@ -156,8 +226,9 @@ Payment mock ใช้ได้เฉพาะ development/test และ produc
 branch endpoint และ API key จาก environment ส่ง slip แบบ multipart และ normalize response ก่อน
 คืนให้ payment service Backend ตรวจยอด ผู้รับ PromptPay (รองรับค่าที่ provider mask) และ transaction
 reference ซ้ำเองอีกชั้น HTTP 400/422 ที่เป็นข้อมูลสลิปไม่ผ่านจะเป็น `REJECTED`; auth, rate limit,
-5xx, timeout, invalid JSON และ response ผิดรูปจะเป็น `ERROR` และสร้าง payment attempt ใหม่เพื่อ retry
-ได้ การ lock order/payment และ unique transaction reference ป้องกัน paid ซ้ำ
+5xx, timeout, invalid JSON และ response ผิดรูปจะเป็น `ERROR`; retry ใช้ attempt และรูปเดิม
+เพื่อคง unique image claim ส่วนผล `REJECTED` สร้าง attempt ใหม่ด้วยสลิปใหม่ได้
+การ lock order/payment และ unique transaction reference ป้องกัน paid ซ้ำ
 
 ทดสอบ provider จริงด้วยตนเองเท่านั้น และต้องใช้ไฟล์ส่วนตัวนอก repo:
 
@@ -208,6 +279,15 @@ credential จะรายงาน `NOT RUN — credentials unavailable`
 | POST | `/api/rider/orders/:id/start-delivery` | assigned rider เปลี่ยน `READY → DELIVERING` |
 | POST | `/api/rider/orders/:id/complete` | assigned rider เปลี่ยน `DELIVERING → COMPLETED` |
 | POST | `/api/webhooks/line` | ตรวจ raw-body HMAC signature และรับ follow/unfollow/postback |
+| POST / GET | `/api/admin/auth/login`, `/me`, `/logout` | Admin session แยก, CSRF และ revoke logout |
+| GET | `/api/admin/dashboard` | metrics, status breakdown และ recent orders จากข้อมูลจริง |
+| GET / POST / PATCH | `/api/admin/merchants`, `/customers`, `/orders`, `/payments` | global management ตาม RBAC; order/payment เน้น read-only |
+| GET / POST / PATCH | `/api/admin/delivery-areas` | จัดการซอย/หอแบบ soft deactivate |
+| GET / POST / PATCH | `/api/admin/banners`, `/promotions` | content management, scheduling และ validation |
+| POST | `/api/admin/banners/upload` | upload รูปผ่าน storage abstraction; เก็บ private object key |
+| GET | `/api/banners/active` | published banners ที่อยู่ในช่วงเวลา; Home fallback ได้เมื่อว่าง/ล้มเหลว |
+| GET / POST / PATCH | `/api/admin/users` | SUPER_ADMIN จัดการผู้ดูแล; ป้องกัน last-super-admin |
+| GET | `/api/admin/audit-logs`, `/system-status`, `/reports` | append-only audit, safe status และ SQL aggregates |
 
 `POST /api/orders` ต้องมี `Idempotency-Key` ยาว 8-128 ตัวอักษร ตัว backend จะรวม
 concurrent request ที่ใช้ customer/key/body เดียวกัน และปฏิเสธ key เดิมที่เปลี่ยน body
@@ -218,6 +298,10 @@ concurrent request ที่ใช้ customer/key/body เดียวกัน
 หน้า frontend: `/`, `/profile`, `/stores/:id`, `/menu/:id`, `/cart`, `/checkout`,
 `/orders`, `/orders/:id`, `/merchant`, `/merchant/orders`, `/merchant/orders/:id`,
 `/merchant/kitchen`, `/rider`, `/rider/orders`, `/rider/orders/:id` และ `/health`
+รวม Admin desktop-first ที่ `/admin`, `/admin/merchants`, `/admin/customers`,
+`/admin/orders`, `/admin/payments`, `/admin/delivery-areas`, `/admin/banners`,
+`/admin/promotions`, `/admin/users`, `/admin/audit-logs`, `/admin/system-status`,
+`/admin/settings` และ `/admin/reports`
 ตะกร้าเก็บใน localStorage และราคาในตะกร้าเป็น
 ค่าประมาณการเท่านั้น Backend ไม่รับราคา ยอดชำระ หรือ PromptPay ID จาก client เป็น
 authoritative value เมื่อ verify ผ่าน ระบบเปลี่ยน `payment_status=PAID` แต่คง
@@ -247,201 +331,250 @@ npm run storage:test-object --workspace backend
 
 หากยังไม่ได้ใส่ credentials สคริปต์จะรายงาน `NOT RUN — credentials unavailable` และไม่ยิง network
 
-## 2. เตรียม backend Ubuntu 24.04 (หลังอนุมัติ deploy)
+## ## 2. เตรียม production Ubuntu 24.04 (หลังอนุมัติ deploy)
 
-เข้า SSH เป็น deployment user ที่มี sudo และรัน:
+Production ใช้ systemd โดยตรง ไม่ใช้ PM2 และกำหนด release path เป็น `/opt/select-topic-2`
+ทั้ง frontend/backend ต้อง checkout commit เดียวกัน:
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y git
-git clone https://github.com/F17UKE/Select-Topic-2.git
-cd Select-Topic-2
-# ถ้างาน bootstrap ยังอยู่เฉพาะ local ต้องนำ revision นี้ขึ้น repo/ส่งไฟล์ก่อน
-# ทั้งสองเครื่องต้องใช้ revision เดียวกันที่ตรวจแล้ว
+sudo mkdir -p /opt/select-topic-2
+sudo git clone https://github.com/F17UKE/Select-Topic-2.git /opt/select-topic-2
+cd /opt/select-topic-2
+git checkout <reviewed-commit-sha>
 git rev-parse HEAD
-bash deploy/scripts/setup-backend.sh
-nano backend/.env
-chmod 600 backend/.env
 ```
 
-ตั้ง `HOST=10.0.7.6`, `PORT=3001` และเติม DB_* จาก Cloud Lab; password ว่างใน example
-ถ้ามี `#` หรือช่องว่างใน password ให้ใส่ quote ตาม dotenv format ไม่ source `.env` ด้วย shell
-ไม่ต้องมี `DATABASE_URL` หรือ `NEXT_PUBLIC_*` ที่บรรจุ secrets
+สคริปต์รองรับการรันเป็น `root` ของ Cloud Lab หรือ deployment user ที่มี sudo และสร้าง
+system user `select-topic-2` ซึ่งไม่มี interactive shell
 
-Setup ติดตั้ง curl/CA/xz และ Node จาก official tarball ที่ตรวจ SHA256 หากยังไม่มี Node
-ถ้ามี Node รุ่นที่ไม่รองรับจะหยุดให้จัดการเอง ไม่ทับ runtime เดิม
-ไฟล์ `.env` ที่มีอยู่จะไม่ถูกเขียนทับและตั้ง permission เป็น 600
+### Backend 10.0.7.6
 
 ```bash
+cd /opt/select-topic-2
+bash deploy/scripts/setup-backend.sh
+vi /etc/select-topic-2/backend.env
 bash deploy/scripts/deploy-backend.sh
 ```
 
-Deploy ติดตั้งเฉพาะ backend + PM2, ตรวจ production config ทั้งหมด/private bind, รัน `SELECT 1`,
-เริ่ม/รีสตาร์ท PM2 และตรวจ health โดย **ไม่รัน migration**
-ถ้า DB check ล้มเหลว แก้ credentials/private routing/TLS ก่อนรัน deploy ซ้ำ
-สคริปต์จะสร้าง S3 client ระหว่าง preflight เพื่อตรวจ endpoint/TLS/credentials config โดยยังไม่ upload object;
-ให้รัน manual provider test ข้างต้นจาก backend host ก่อน deploy จริง
+ไฟล์จริงอยู่ที่ `/etc/select-topic-2/backend.env` mode 0600 นอก Git
+ใช้ [backend/.env.example](backend/.env.example) เป็นรายการตัวแปร แต่ห้ามเก็บค่าจริงใน repo
+Deploy ตรวจ production config ทุก domain, private bind, object-storage adapter และ DB connectivity
+ก่อน restart `select-topic-2-backend.service`; deploy ไม่ migrate database อัตโนมัติ
 
-## 3. เตรียม frontend Ubuntu 24.04 (หลังอนุมัติ deploy)
+### Database 10.0.7.7:5432
+
+ก่อน migrate ให้รัน read-only preflight ซึ่งบังคับ target `10.0.7.7:5432`, ปฏิเสธชื่อ
+local/test และตรวจ migration history:
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y git
-git clone https://github.com/F17UKE/Select-Topic-2.git
-cd Select-Topic-2
-git rev-parse HEAD
+cd /opt/select-topic-2
+node --env-file=/etc/select-topic-2/backend.env backend/scripts/preflight-production-db.cjs
+export CONFIRM_DB_TARGET='10.0.7.7/<production-db-name>'
+# ตั้งค่านี้หลัง verify backup เท่านั้น และใช้เมื่อ preflight พบข้อมูล
+export PRODUCTION_DB_BACKUP_REFERENCE='<backup-reference>'
+bash deploy/scripts/migrate-production.sh
+unset CONFIRM_DB_TARGET PRODUCTION_DB_BACKUP_REFERENCE
+```
+
+Migration ต้องเรียง 001–006 และ pending เป็น 0 สคริปต์ไม่รัน seed/rollback
+ห้ามใช้ `db:seed` หรือ `db:verify-local` กับ production
+
+### Frontend 10.0.7.5
+
+```bash
+cd /opt/select-topic-2
 bash deploy/scripts/setup-frontend.sh
 bash deploy/scripts/deploy-frontend.sh
 ```
 
-Deploy ติดตั้ง frontend + PM2 + build tools, build production, เปิด Next บน loopback,
-ติดตั้ง Nginx config, รัน `nginx -t` ก่อน reload แล้วตรวจทั้งเส้นทางถึง PostgreSQL
-Backend ต้องพร้อมก่อนจึงจะได้ผล verification ผ่านครบ
+สคริปต์ build Next.js, เริ่ม `select-topic-2-frontend.service` บน
+`127.0.0.1:3000`, ติดตั้ง HTTP bootstrap Nginx และตรวจเส้นทางถึง backend/DB
+Frontend environment อยู่ที่ `/etc/select-topic-2/frontend.env` และไม่มี provider/DB secret
+หลัง build สคริปต์ prune dev-only lint/build dependencies ก่อนเริ่ม runtime
 
-ใช้ PM2 fork 1 process ต่อเครื่อง; DB pool `min=0,max=2` (config อนุญาตสูงสุด 5)
-Next build จำกัด 1 worker และ heap 640 MB พร้อม Webpack memory optimization
-ข้อจำกัด heap ไม่ใช่เพดาน RAM รวม และยังไม่ผ่านการวัดบนเครื่อง Cloud RAM 1 GB
-ถ้า build OOM ให้ build บน Linux runner ที่มี RAM เพียงพอด้วย Node/architecture เดียวกัน
-แล้วส่ง `.next/` พร้อม source/lockfile ของ revision เดียวกันไป frontend
-จากนั้นติดตั้ง dependencies และเริ่ม PM2 ตามด้านล่าง; ห้ามใช้ Windows `.next/` บน Ubuntu
-ไม่มีการเพิ่ม swap หรือเปลี่ยนเครื่องให้โดยอัตโนมัติ
+Next build จำกัด 1 worker และ heap 640 MB หากเครื่อง 1 GB OOM ให้ build บน Linux runner
+ที่ใช้ Node/architecture และ revision เดียวกัน แล้วส่ง artifact จาก Linux เท่านั้น ห้ามใช้ Windows
+`.next/` บน Ubuntu และสคริปต์จะไม่เพิ่ม swap เอง
 
-```bash
-# กรณีใช้ build artifact จาก Linux แทน build บน Cloud
-npm ci --include=dev --workspace frontend --include-workspace-root
-./node_modules/.bin/pm2 startOrRestart deploy/pm2/frontend.ecosystem.config.cjs --update-env
-./node_modules/.bin/pm2 save
-# ติดตั้ง Nginx ตามหัวข้อ manual ด้านล่าง แล้วรัน verify-frontend.sh
-```
+## 3. systemd และ reboot
 
-สคริปต์รองรับ fresh dedicated instances: ตรวจชื่อ PM2 คงที่เพื่อไม่สร้าง process ซ้ำ,
-ติดตั้ง dependencies จาก lockfile, เก็บ `.env` เดิม และไม่ migrate/แก้ firewall
-รัน deploy ซ้ำมีช่วง restart/ติดตั้ง dependencies ไม่ใช่ zero-downtime deployment
-หากมี Nginx site อื่นหรือ config เดิมต่างจากใน repo จะหยุดให้ review แทนการเขียนทับ
-stock default symlink จะย้ายไป `/etc/nginx/select-topic-2-default.backup` นอก sites-enabled
-หาก `nginx -t` ไม่ผ่าน จะย้อนการเปลี่ยน enabled symlinks ของรอบนั้นและไม่ reload
-
-## 4. PM2 startup หลัง reboot (ทั้งสองเครื่อง)
-
-ใช้ deployment user เดิมทุกครั้ง **อย่าใช้ `sudo pm2 start`**
+ทั้งสอง unit ใช้ process เดียว, restart on failure, start on boot, journald และ hardening options:
 
 ```bash
-./node_modules/.bin/pm2 status
-./node_modules/.bin/pm2 startup systemd -u "$USER" --hp "$HOME"
-# PM2 จะแสดงคำสั่ง sudo ที่รวม PATH จริง ให้รันคำสั่งนั้นตามที่แสดง
-./node_modules/.bin/pm2 save
-sudo systemctl status "pm2-$USER" --no-pager
+sudo systemctl status select-topic-2-backend --no-pager
+sudo systemctl status select-topic-2-frontend --no-pager
+sudo journalctl -u select-topic-2-backend -n 50 --no-pager
+sudo journalctl -u select-topic-2-frontend -n 50 --no-pager
 ```
 
-Startup เป็นขั้นตอนแยกที่ต้องทำตามคำสั่ง PM2 บน host จริง ไม่ได้ตั้ง systemd ไว้จากเครื่องนี้
-เมื่อติดตั้ง Node ใหม่หรือย้าย repo ให้สร้าง startup service ใหม่ให้ตรง path
-ตั้ง log rotation ตามนโยบายเครื่องก่อนใช้งานยาวนาน; bootstrap ยังไม่มี log rotation service
+หลังได้รับอนุมัติ reboot ต้องตรวจ PostgreSQL reachability, `systemctl is-active` ของ backend,
+frontend และ Nginx แล้วตรวจ health/proxy ซ้ำ
 
-## 5. Verification commands
+## 4. Nginx และ HTTPS
 
-บน backend:
+[select-topic-2.conf](deploy/nginx/select-topic-2.conf) เป็น HTTP bootstrap เท่านั้น หลังทราบ
+domain และติดตั้ง certificate แล้วให้ render template:
 
 ```bash
-cd Select-Topic-2
-npm run db:check --workspace backend
-curl --fail-with-body --max-time 10 http://10.0.7.6:3001/api/health
-./node_modules/.bin/pm2 logs select-topic-2-backend --lines 50 --nostream
+bash deploy/scripts/configure-nginx-tls.sh <domain> /absolute/fullchain.pem /absolute/privkey.pem
 ```
 
-`db:check` ใช้ `pg` ผ่าน Knex ด้วย environment เดียวกับ API และรัน `SELECT 1`
-โดยไม่ต้องใส่ password บน command line; exit 0 เมื่อเชื่อมต่อสำเร็จ, 1 เมื่อล้มเหลว
+Template redirect HTTP ไป HTTPS, ใส่ HSTS เฉพาะ TLS virtual host และส่ง `Host`,
+`X-Real-IP`, `X-Forwarded-For`, `X-Forwarded-Proto` ที่ Nginx กำหนดเอง
+เส้นทาง `/api/*`, `/api/webhooks/line` และ `/webhooks/line` ไป
+`10.0.7.6:3001`; เส้นทางอื่นไป Next.js `127.0.0.1:3000`
+สคริปต์ไม่ออก certificate และจะเรียก `nginx -t` ก่อน reload
 
-บน frontend:
+## 5. Verification บน Cloud
 
 ```bash
-curl --fail-with-body --max-time 10 http://127.0.0.1:3000/health
-curl --fail-with-body --max-time 10 http://10.0.7.6:3001/api/health
-sudo nginx -t
-curl --fail-with-body --max-time 10 http://127.0.0.1/health
-curl --fail-with-body --max-time 10 http://127.0.0.1/api/health
-bash deploy/scripts/verify-frontend.sh http://127.0.0.1
+curl --fail-with-body http://127.0.0.1:3000/health
+curl --fail-with-body http://10.0.7.6:3001/api/health
+curl --fail-with-body https://<domain>/api/health
+bash deploy/scripts/verify-frontend.sh https://<domain>
 ```
 
-จากเครื่องผู้ใช้ ให้เปิด frontend public address/domain และกดปุ่มตรวจสถานะ
-หรือแทน `FRONTEND_PUBLIC_HOST` แล้วรัน (ไม่ใช้ public backend address):
-
-```bash
-curl --fail-with-body http://FRONTEND_PUBLIC_HOST/health
-curl --fail-with-body http://FRONTEND_PUBLIC_HOST/api/health
-curl -i -H 'Content-Type: application/json' -d '{"events":[]}' http://FRONTEND_PUBLIC_HOST/api/webhooks/line
-curl -i -H 'Content-Type: application/json' -d '{"events":[]}' http://FRONTEND_PUBLIC_HOST/webhooks/line
-```
-
-ผลที่คาดหวัง:
-
-```json
-{"service":"frontend","status":"ok"}
-```
-
-```json
-{"status":"ok","api":{"status":"ok"},"database":{"status":"ok"}}
-```
-
-- API+DB พร้อม: HTTP 200; DB ติดต่อไม่ได้: HTTP 503, database `unavailable`
-- ไม่ตั้ง DB เลย: HTTP 503, database `not_configured`; ไม่ส่ง credentials/error ภายในกลับ browser
-- `/api/webhooks/line` และ `/webhooks/line` ที่ไม่มี `x-line-signature`: HTTP 401 เป็นผลที่คาดหวัง
-- 502 จาก Nginx: ตรวจ PM2/private bind/route; 503 จาก API: ตรวจ DB config/TLS/network
-- `/health` ตรวจ frontend เท่านั้น; `/api/health` ตรวจ DB connectivity ไม่ได้ตรวจว่ามี tables แล้ว
-- Health ใช้ query เบา ไม่มี auto polling; production monitoring ควรใช้ความถี่เหมาะสม
-
-## 6. Migration — แยกจาก deployment
-
-Schema V3 ได้รับอนุมัติใน [SCHEMA_REVIEW.md](database/SCHEMA_REVIEW.md) และ initial
-migration ถูกออกแบบสำหรับ database ใหม่ที่ว่างเท่านั้น Local seed มี guard บังคับ
-database `select_topic_2_local` บน loopback จึงไม่สามารถใช้ seed กับ Cloud ได้
-
-หลังอนุมัติและตรวจว่าเป็น DB ว่าง/มี backup กับแผน reconciliation แล้ว บน backend เท่านั้น:
-
-```bash
-npm run db:migrate --workspace backend
-npm run db:status --workspace backend
-npm run db:seed --workspace backend # local only
-npm run db:verify-local --workspace backend # local only
-```
-
-Knex บันทึก migration history และไม่รันไฟล์เดิมซ้ำ ใช้ transaction ตามค่า default
-อย่าเรียก `db:rollback` บนข้อมูลจริงโดยไม่มีแผน เพราะ down migration ลบทั้ง 20 ตาราง
-เมื่อ initial migration ถูก apply ใน environment ใดแล้ว ห้ามแก้ไฟล์เดิม ให้สร้าง migration ใหม่
-
-## Nginx manual installation / HTTPS
-
-หากมี config เดิม ให้ review diff และ backup ก่อนติดตั้ง ไม่รันคำสั่งทับ custom config โดยตรง
-สำหรับ fresh instance หลังตรวจแล้ว:
-
-```bash
-sudo install -m 644 deploy/nginx/select-topic-2.conf /etc/nginx/sites-available/select-topic-2
-sudo ln -sfn /etc/nginx/sites-available/select-topic-2 /etc/nginx/sites-enabled/select-topic-2
-# หากมี stock default ให้ย้ายออกจาก sites-enabled ไป backup นอก directory นี้ก่อน
-sudo nginx -t
-sudo systemctl enable --now nginx
-sudo systemctl reload nginx
-bash deploy/scripts/verify-frontend.sh http://127.0.0.1
-```
-
-Config เป็น HTTP bootstrap และ `server_name _`; ต้องเปลี่ยนเป็น domain จริงและเพิ่ม
-TLS/HTTPS ก่อน LINE webhook หรือข้อมูลผู้ใช้จริง ยังไม่สร้าง certificate/DNS ในรอบนี้
-`proxy_pass` ไม่มี slash หลัง upstream เพื่อรักษา `/api/health` และ `/api/webhooks/line`
+Expected: frontend/API/database เป็น `ok`; unsigned webhook ทั้งสอง alias ตอบ 401
+จากนั้นทำ manual provider tests ตาม [DEPLOYMENT_CHECKLIST.md](DEPLOYMENT_CHECKLIST.md):
+LINE LIFF/Login/Webhook/Flex, SlipOK amount/recipient/duplicate และ private object storage
+upload/HEAD/delete Automated tests ไม่เรียก provider จริง
 
 ## Dependencies และหลักฐานการตรวจ
 
 ผลรอบปัจจุบันอยู่ใน [VERIFICATION.md](VERIFICATION.md)
-`npm run verify` แยก lint/test/build เพราะ Next 16 build ไม่รัน ESLint ให้เอง
-`npm run test:smoke` เปิด process local ชั่วคราวบน loopback/random ports แล้วปิดเอง
-ทดสอบ DB timeout ด้วย TCP sink local ไม่ใช้ฐานข้อมูล Cloud หรือสร้างตาราง
+`npm run verify` แยก lint/test/build และ `npm run security:scan` ตรวจ credential/runtime artifact
+PM2 ถูกถอดจาก production runtime; `npm audit --omit=dev` จึงไม่ผ่าน chain
+`PM2 -> chokidar -> braces` อีก Local scripts `dev:frontend`, `dev:backend`,
+`start-db`, `stop-db` และ `status-db` ไม่เปลี่ยน
 
-ESLint 9 ใช้ตาม peer range ของ `eslint-plugin-react` ที่มากับ Next config ปัจจุบัน
-(npm แจ้ง deprecated; lint ยังผ่านและไม่ได้อยู่ production backend install)
-Root overrides ตรึง PM2 `js-yaml` เป็น 4.3.2 และ `get-uri` -> `basic-ftp` เป็น 6.2.1
-เพื่อแก้ audit advisories ใน transitive dependencies; ทบทวนเมื่ออัปเดต PM2
-FTP/PAC proxy ไม่ได้ใช้งานใน application นี้
+อ้างอิง [DEPLOYMENT_CHECKLIST.md](DEPLOYMENT_CHECKLIST.md) สำหรับ environment, migration,
+TLS, provider และ reboot gates ทั้งหมด
 
-อ้างอิงทางเทคนิค: [Next installation](https://nextjs.org/docs/app/getting-started/installation),
-[Next memory usage](https://nextjs.org/docs/app/guides/memory-usage),
-[Knex configuration](https://knexjs.org/guide/), [Knex migrations](https://knexjs.org/guide/migrations),
-[Nginx proxy_pass](https://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_pass),
-[PM2 startup](https://pm2.keymetrics.io/docs/usage/startup/).
+Merchant management — Phase G (local)
+
+Start the existing portable PostgreSQL with `npm run start-db`, then:
+
+```powershell
+npm run db:migrate --workspace backend
+npm run db:status --workspace backend
+npm run db:verify-local --workspace backend
+npm run dev --workspace backend
+# In a second terminal:
+npm run dev --workspace frontend
+```
+
+Open http://127.0.0.1:3000/merchant and use the existing local manager login. The expandable
+management menu links to store settings, categories, menu/new/detail/options, delivery fees,
+staff, riders, order history, reports, promotions and banners. Production still uses existing
+password authentication and mock guards. Seed was not rerun or expanded in Phase G; existing
+seed is sufficient. Never run the local seed on Cloud.
+
+Additional repeatable local test: `npm run test:smoke:merchant-management` (rollback-isolated
+HTTP integration suite plus isolated concurrency fixtures). Full checks: `npm run verify`,
+`npm run test:smoke:local`, `npm run test:smoke`, `npm audit`.
+See `database/PHASE_G_MIGRATION_REVIEW.md` and `database/PHASE_G_REPORT.md` for policies,
+API map, test evidence, known limitations and Phase H stock proposals.
+
+## Customer engagement — Phase H (local)
+
+After `npm run start-db`, apply migration 006 and keep the existing local services running:
+
+```powershell
+npm run db:migrate --workspace backend
+npm run db:status --workspace backend
+npm run db:verify-local --workspace backend
+npm run test:smoke:customer-engagement
+```
+
+The idempotent local seed provides 3 merchants, 19 menu items, option groups/choices, all staff roles,
+delivery fees, one published banner, coupon `WELCOME10`, an active free-delivery promotion, one
+synthetic customer and a completed order/review. These records are synthetic; the seed guard refuses
+non-loopback databases and any database name other than `select_topic_2_local`.
+
+Customer routes added in Phase H are `/favorites`, `/promotions` and `/notifications`. Completed order
+details support review and reorder preview. Checkout accepts one coupon or one automatic promotion,
+never both. Admin manages coupons and review visibility at `/admin/coupons` and `/admin/reviews`;
+Merchant Manager/Cashier can read their own reviews at `/merchant/reviews`.
+
+Key APIs:
+
+- `GET|POST|DELETE /api/customer/favorites[/:merchantId]`
+- `GET /api/merchants/:id/reviews`
+- `GET|POST /api/orders/:id/review`, `POST /api/orders/:id/reorder-preview`
+- `GET|PATCH /api/customer/notifications[/:id/read]`, `POST /api/customer/notifications/read-all`
+- `GET /api/promotions` for current customer discovery
+- Admin review/coupon APIs under `/api/admin/reviews` and `/api/admin/coupons`
+- `GET /api/merchant/reviews` for the authenticated merchant only
+
+See `database/PHASE_H_MIGRATION_REVIEW.md` and `database/PHASE_H_REPORT.md` for the schema decision,
+security rules, test evidence and known limitations.
+
+## Customer image presentation standards
+
+ขนาดต่อไปนี้เป็นคำแนะนำสำหรับจัดเตรียมรูป ไม่ใช่เงื่อนไขปฏิเสธการอัปโหลด รูปที่ผ่าน validation ชนิดไฟล์/ขนาดเดิมยังใช้งานได้
+
+| รูปภาพ | ขนาดแนะนำ | อัตราส่วน |
+| --- | --- | --- |
+| Merchant logo / profile | 800 × 800 px | 1:1 |
+| Merchant cover / gallery | 1200 × 800 px | 3:2 |
+| Menu item | 1000 × 1000 px | 1:1 |
+| Home banner | 1600 × 720 px | 20:9 |
+| Promotion image (เมื่อมีช่องรูปในอนาคต) | 1000 × 600 px | 5:3 |
+
+ใช้ JPG, PNG หรือ WebP ตาม upload validation เดิม วางข้อความ/จุดสำคัญของรูปให้อยู่บริเวณกลางภาพ เผื่อการครอบด้วย `object-fit: cover` บน Home รูป banner และ store cover ใช้อัตราส่วนเดียวกันทุก breakpoint; ไม่บันทึกหรือแปลงรูปต้นฉบับ
+
+Home ใช้ mobile padding 16px, container สูงสุด 760px, banner swipe พร้อม dots (ไม่มี autoplay), โปรโมชันเลื่อนแนวนอน และร้านหนึ่งคอลัมน์บนมือถือ/สองคอลัมน์ตั้งแต่ 640px ส่วน logo/profile และ promotion image เป็นมาตรฐานเตรียม asset เท่านั้น ยังไม่มีการเพิ่มช่องอัปโหลด/API ใหม่
+
+## Local payment separation and EasySlip v2 (2026-10-08)
+
+Checkout → `/orders/[id]/payment` → verified PAID → `/orders/[id]`.
+Order Detail keeps order/delivery snapshots, timeline, review and totals; unpaid orders have
+a compact payment action. No QR/upload is mixed into tracking. Existing customer-owned APIs
+and cookie/origin protection remain; no new API namespace.
+
+QR is local `promptpay-qr` + `qrcode`; persisted discounted order total and the merchant's
+PromptPay identifier are authoritative, not browser amount/receiver. No EasySlip v1 call.
+
+EasySlip adapter uses [official v2 Bank verification](https://document.easyslip.com/en/v2/verify/bank/)
+server-to-server: Bearer auth; multipart `image`, `remark`, `matchAmount`,
+`matchAccount=true`, `checkDuplicate=true`. Connect/request limits default 3000/10000ms,
+bounded response size, no redirects/retries or raw provider logging. Known errors follow
+the [official error-code contract](https://document.easyslip.com/en/reference/error-codes).
+
+Protected backend environment (never NEXT_PUBLIC):
+- `PAYMENT_VERIFICATION_MODE=mock|checkslip|easyslip`; existing default is unchanged.
+- `EASYSLIP_API_BASE_URL=https://api.easyslip.com/v2` (fixed allowlisted origin)
+- `EASYSLIP_API_KEY`, `EASYSLIP_CONNECT_TIMEOUT_MS`, `EASYSLIP_REQUEST_TIMEOUT_MS`
+- `EASYSLIP_MERCHANT_ACCOUNTS`: JSON object keyed by merchant ID. Each entry binds
+  `promptpayType`, `promptpayId`, `bankCode`, `bankNumber`; store full digits only in
+  protected config. Enrollment/account ownership must be independently verified. Empty
+  mapping is safe: the adapter stops before network. A changed merchant PromptPay ID
+  invalidates the mapping. Admin Merchant Detail now supports encrypted DB overrides for each
+  merchant, with this ENV format retained as fallback. See `docs/ADMIN_MERCHANT_RECIPIENTS.md`.
+
+PAID requires strict success, matching amount flag and three exact satang amounts
+(order/amountInOrder/amountInSlip/raw amount), nonempty bounded reference, exact merchant
+registered account AND raw recipient account, no provider duplicate, and a free local ledger
+reference. Masked raw accounts fail closed. Branch-wide/name-only matching is insufficient.
+Payment/order/ledger/outbox finalize atomically under order→payment locks; network runs outside
+DB locks. Customer responses omit provider payload/reference/private object key. Admin readers
+retain existing permission-controlled diagnostics.
+
+Uploads remain private via existing local/S3 abstraction with server MIME/magic inspection,
+random names and retention. Effective limit is capped at 4,194,304 bytes even with an older
+larger SLIP_MAX_BYTES setting. ERROR retries reuse the original image/attempt and global hash
+claim; REJECTED allows a new slip/attempt. An already-paid replay does not reverify or notify.
+A duplicate provider result without a local paid ledger fails for review, never amount-only credit.
+
+Manual provider-only verification, **not run automatically**:
+
+```text
+npm run payment:test-easyslip --workspace backend -- --confirm-real-verification <absolute-private-image-outside-repo> <merchant-id> <expected-THB-amount>
+```
+
+Reads ignored backend environment, validates image/mapping, performs at most one verification,
+prints only safe normalized metadata/reference digest; imports no DB/payment writer.
+Missing explicit confirmation/key means NOT RUN. No real key/slip belongs in Git.
+
+Read VERIFICATION's current PARTIAL gates before switching modes. Automated mock tests do not
+prove live enrolled-account mapping or Owner browser acceptance.

@@ -86,7 +86,10 @@ async function main() {
     assert.deepEqual(await health.json(), { service: 'frontend', status: 'ok' });
     const page = await fetch(`http://127.0.0.1:${webPort}/`);
     assert.equal(page.status, 200);
-    assert.match(await page.text(), /Select Topic 2/);
+    const html = await page.text();
+    assert.match(html, /<html\b[^>]*lang="th"/);
+    assert.match(html, /\/_next\/static\//, 'Next application assets must be present');
+    assert.match(html, /<main\b/, 'Application or customer access gate must render');
     const directApi = await fetch(`http://127.0.0.1:${webPort}/api/health`);
     assert.equal(directApi.status, 404, 'Production API proxy belongs to Nginx');
     console.log('PASS frontend production process: page/health -> 200; direct API -> 404 as designed');

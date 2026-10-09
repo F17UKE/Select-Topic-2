@@ -1,6 +1,15 @@
 # DATABASE SCHEMA V3
 
-Status: approved for the initial local migration. Reviews and banners are deferred.
+## Finance 008 — current additive schema
+
+Migrations 001–008 are complete locally, pending 0. There are now **49 application tables / 51 public tables**. Migration 008 creates 12 Finance tables (149 columns): finance_policy_versions, platform_payment_recipients, order_financial_snapshots, financial_accounts, financial_transactions, financial_postings, merchant_payout_accounts, merchant_withdrawals, finance_refunds, finance_transfers, advertising_orders, finance_reconciliation_cases.
+
+Seven new columns across merchants/orders/payments/promotions/coupons; existing migrations unchanged. system_settings gets a private finance.runtime row. See [implemented catalog](docs/FINANCE_SCHEMA_IMPLEMENTED.md) for every column, constraint, index and trigger, and [implementation report](docs/FINANCE_SPRINT_REPORT.md) for current behavior. Earlier counts below are historical phase records.
+
+Backfill is explicitly legacy: existing orders LEGACY_DIRECT with null platform recipient, existing campaign funding LEGACY_UNKNOWN. No commission, balance or journal backfill. New normal campaigns require MERCHANT or PLATFORM. Financial postings are append-only, protected by deferred aggregate balance triggers; financial history cannot be hard-deleted. Finance migration down intentionally refuses destructive rollback.
+
+
+Status: approved baseline plus additive migrations 002–006. Current local schema has 36 application tables.
 The executable baseline is `backend/migrations/202610020001_initial_schema.cjs`.
 
 ## Design rules
@@ -24,7 +33,8 @@ The executable baseline is `backend/migrations/202610020001_initial_schema.cjs`.
 ## Tables
 
 Schema V3 baseline contains 20 application tables. Production hardening migration
-`202610020002_production_hardening.cjs` adds three operational tables without editing the baseline:
+`202610020002_production_hardening.cjs` adds three operational tables and Admin Backoffice
+migration `202610050003_admin_backoffice.cjs` adds six management tables without editing earlier migrations:
 
 1. `sois`
 2. `dormitories`
@@ -49,8 +59,34 @@ Schema V3 baseline contains 20 application tables. Production hardening migratio
 21. `idempotency_keys` (additive)
 22. `line_webhook_events` (additive)
 23. `notification_outbox` (additive)
+24. `platform_admins` (additive)
+25. `platform_admin_sessions` (additive)
+26. `audit_logs` (additive)
+27. `banners` (additive)
+28. `promotions` (additive)
+29. `system_settings` (additive)
+30. `promotion_redemptions` (Phase F, additive migration 004)
+31. `merchant_opening_hours` (Phase G, additive migration 005)
+32. `reviews` (Phase H, additive migration 006)
+33. `customer_favorite_merchants` (Phase H, additive migration 006)
+34. `coupons` (Phase H, additive migration 006)
+35. `coupon_redemptions` (Phase H, additive migration 006)
+36. `customer_notifications` (Phase H, additive migration 006)
+37. `integration_settings` (Admin Integrations, additive migration 007)
 
 Knex also creates its own `knex_migrations` and `knex_migrations_lock` metadata tables.
+
+### Admin Integrations — migration 007
+
+`202610090007_integration_settings.cjs` adds one private singleton table; no existing table is altered.
+`id SMALLINT PRIMARY KEY CHECK (id = 1)`, `normal_values JSONB NOT NULL DEFAULT '{}'`,
+`secret_values JSONB NOT NULL DEFAULT '{}'`, `version INTEGER NOT NULL DEFAULT 0 CHECK (version >= 0)`,
+nullable `updated_by_admin_id` FK to `platform_admins` (SET NULL), and created/updated timestamptz.
+Both JSONB columns require objects. Secret entries are versioned AES-256-GCM envelopes; the master
+key exists only in server environment. A locked row/version check and audit insert make writes atomic.
+No extra index is needed beyond the singleton PK. No seeds/backfill are added; no row exists until a save.
+Rollback refuses to drop a populated table. This is not the frozen Finance foundation migration.
+Current total: **37 application tables**, plus two Knex metadata tables.
 
 ## Production hardening additions
 
@@ -66,6 +102,23 @@ Knex also creates its own `knex_migrations` and `knex_migrations_lock` metadata 
 - `orders.delivering_at timestamptz NULL`: records the successful `READY → DELIVERING` transition.
 - Active staff usernames are globally unique case-insensitively so password login by username is
   deterministic. Existing merchant-scoped uniqueness remains in place.
+
+## Admin Backoffice additions
+
+- `platform_admins`: case-insensitive active username uniqueness, bcrypt password hash, role
+  (`SUPER_ADMIN`, `ADMIN`, `SUPPORT`, `FINANCE`), activation and login timestamps.
+- `platform_admin_sessions`: SHA-256 hashes of session/CSRF tokens, expiry, revocation, idle activity,
+  source IP and user agent. Raw session credentials are never stored.
+- `audit_logs`: append-only application audit records with actor/action/entity/request metadata.
+  Sensitive keys are recursively redacted before insert.
+- `banners`: private image object key, global/merchant scope, target, draft/scheduled/published/archive
+  status, start/end window and sort order. Customer Home resolves images through a controlled API.
+- `promotions`: percentage, fixed amount and free delivery rules; authoritative checkout calculations
+  and locked quota consumption are implemented in Phase F.
+- `system_settings`: allowlisted non-secret JSON settings only. Provider/database/session secrets remain
+  environment variables.
+- `merchants.is_active`, suspension timestamp/reason/admin FK keep account suspension distinct from
+  the store's operational `is_open` state.
 
 ## Entity relationships
 
@@ -209,7 +262,11 @@ Merchant authentication belongs to `merchant_staffs`; a merchant row is not a pe
 - `payment_method`: `PROMPTPAY`, `COD`
 - `payment_status`: `UNPAID`, `PENDING_VERIFICATION`, `PAID`, `FAILED`,
   `REFUNDED`, `CANCELLED`
-- `subtotal_amount`, `delivery_fee`, `total_amount`; total must equal subtotal + fee
+- `subtotal_amount`, `delivery_fee`, `discount_amount`, `total_amount`;
+  total must equal subtotal + fee - discount (constraint updated by migration 004)
+- `promotion_id` nullable FK → `promotions.id` (RESTRICT), `promotion_snapshot` nullable JSONB.
+  Historical rows default to discount 0 and no promotion. A linked promotion requires an object
+  snapshot; no promotion requires a null snapshot and zero discount.
 - Delivery snapshot: `delivery_address_label`, `delivery_soi_name`,
   `delivery_dormitory_name`, `delivery_location_text`, `delivery_room_number`,
   `delivery_contact_phone`
@@ -236,6 +293,24 @@ address and has a zero delivery fee.
 Master references can be nullable for historical records; snapshot values are required.
 
 ## Payment
+
+### Phase F `promotion_redemptions`
+
+- `id` PK; `order_id` UNIQUE FK → orders; `promotion_id` FK → promotions;
+  `customer_id` FK → customers. All are NOT NULL and use RESTRICT deletion.
+- `discount_amount numeric(12,2) >= 0`, `created_at timestamptz`.
+- Indexes `(promotion_id, created_at)` and `(customer_id, created_at)`.
+- One promotion per order, no stacking. The order snapshot records immutable display/rule values,
+  integer discount satang, calculation version and quota policy.
+- Merchant and promotion rows lock in that order. Insert order/redemption, increment usage_count,
+  and complete the existing idempotency record in one transaction. Quotation never consumes quota.
+- Quota counts created orders, including cancelled/rejected/unpaid orders; no automatic release.
+  Admin cannot lower usage_limit below usage_count. Replayed idempotent responses consume nothing.
+- Percentage/fixed discounts apply to food subtotal (including options), free delivery to the fee;
+  round percentage half up to one satang, apply maximum cap, and never exceed the applicable base.
+  Minimum spend is food subtotal. Scope is global when merchant_id is NULL.
+- Zero-pay checkout is explicitly rejected because the existing PromptPay flow requires a payment;
+  this phase does not invent automatic paid/fulfillment behavior for a zero amount.
 
 ### `payments`
 
@@ -289,8 +364,96 @@ Chat tables are part of V3, but chat API/realtime/notification logic is deferred
 - `last_read_message_id` FK → `order_messages.id`, ON DELETE SET NULL
 - Partial UNIQUE per `(order_id, customer_id)` and `(order_id, staff_id)`
 
-## Deferred from V3
+## Deferred from the current schema/runtime
 
-- `reviews`: wait for eligibility, moderation, edit and visibility rules.
-- `banners`: wait for global-vs-merchant scope, scheduling and targeting rules.
-- Business logic for LINE, payments, order transitions, KDS, rider dispatch and chat.
+- `order_status_events`: durable status timeline remains deferred to avoid changing the established
+  customer/merchant/kitchen/rider transition services in this phase.
+- Business logic and UI for order chat remain deferred; `order_messages` and
+  `order_chat_read_states` are schema-ready only.
+- Refund automation and automatic stock reservation/decrement are not implemented.
+
+## Phase G — additive migration 005
+
+`202610060005_merchant_opening_hours.cjs` adds `merchant_opening_hours` only (31 application
+ tables after 005). Migrations 001–004 are unchanged in Phase G.
+
+| Column | Constraint / meaning |
+|---|---|
+| id | BIGSERIAL PK |
+| merchant_id | BIGINT NOT NULL FK merchants.id |
+| day_of_week | SMALLINT NOT NULL, CHECK 0–6, Sunday=0 |
+| open_time / close_time | TIME, Bangkok local wall clock |
+| is_closed | BOOLEAN NOT NULL DEFAULT false |
+| created_at / updated_at | TIMESTAMPTZ NOT NULL |
+
+UNIQUE (merchant_id, day_of_week) also supplies the merchant schedule lookup index.
+CHECK: closed day OR non-null times with close_time > open_time. API saves all seven days
+atomically, or an empty array to remove scheduling. No overnight/multiple daily intervals.
+`merchants.is_open` remains the manual switch; false takes precedence. Missing schedule
+preserves the previous behavior. Browse returns OPEN/CLOSED/MANUALLY_CLOSED;
+checkout and order creation enforce the same schedule under the existing merchant row lock.
+Down migration drops only the schedule table.
+
+No stock accounting, audit, staff, image, order or payment schema change. Category/menu deletion
+uses existing deleted_at; option deletion nulls historical master-choice FK while keeping all
+receipt snapshot fields. Removing a gallery entry unlinks the object; it does not erase payment
+or order records. Gallery/menu upload objects use private `merchant/<merchant-id>/<uuid>.<ext>`
+and `menu/<merchant-id>/<uuid>.<ext>` keys; image_url stores the backend catalog delivery route.
+
+## Phase H — additive migration 006
+
+`202610070006_customer_engagement.cjs` adds five customer-engagement tables and nullable coupon
+snapshot columns to `orders` (36 application tables after 006). Migrations 001–005 are unchanged.
+
+### `reviews`
+
+- `id` PK; `order_id` UNIQUE FK; `customer_id` and `merchant_id` FKs.
+- `rating` is an integer from 1–5; `comment` is optional and limited to 1,000 trimmed characters by
+  the API; `status` is `PUBLISHED` or `HIDDEN`.
+- Indexes `(merchant_id,status,created_at)` and `(customer_id,created_at)`. The service derives the
+  customer and merchant from a customer-owned `COMPLETED` order.
+
+### `customer_favorite_merchants`
+
+- `id` PK; customer and merchant FKs; `created_at`.
+- UNIQUE `(customer_id,merchant_id)` makes add idempotent; index `(customer_id,created_at)` supports
+  the profile and Home sections. A suspended merchant remains in history and is shown unavailable.
+
+### `coupons` and `coupon_redemptions`
+
+- Coupon fields include a normalized `code`, name/description, nullable merchant scope, type
+  (`PERCENTAGE`, `FIXED_AMOUNT`, `FREE_DELIVERY`), amount/cap/minimum, schedule, global and
+  per-customer limits, `usage_count`, active/deleted state and nullable Admin creator.
+- A partial UNIQUE index on `lower(code)` applies while `deleted_at IS NULL`; eligibility/scope
+  indexes cover active schedule and merchant lookups.
+- Redemptions contain coupon/customer/order FKs, immutable discount amount and creation time.
+  `order_id` is UNIQUE; indexes cover coupon and customer histories.
+- Coupon resolution, quota validation, order insert, redemption insert and usage increment share
+  one transaction and a coupon row lock. Quota is consumed at order creation and is not released
+  automatically for a later cancellation or rejection.
+- `orders.coupon_id` and `orders.coupon_snapshot` are nullable. The replacement check constraint
+  enforces exactly one discount source: no discount, automatic promotion, or coupon. `discount_amount`
+  stays authoritative; snapshots contain identifier/code/name/type, calculation version,
+  `discount_satang`, schedule and quota policy for historical display.
+
+### `customer_notifications`
+
+- `id` BIGSERIAL PK; customer FK; provider-independent type/title/message; nullable order FK;
+  `is_read`; `created_at`; unique `event_key` for domain-event deduplication.
+- Types: `PAYMENT_VERIFIED`, `ORDER_ACCEPTED`, `PREPARING`, `READY`, `DELIVERING`, `COMPLETED`,
+  `REJECTED`, `PROMOTION`.
+- Index `(customer_id,is_read,created_at)` supports unread counts and history. Order events write this
+  projection transactionally before optional LINE outbox delivery, so provider failures do not lose
+  customer history or expose LINE payloads.
+
+Migration 006 rollback refuses to run if review, favourite, redemption or notification history exists,
+or if an order references a coupon. This prevents silent deletion of customer and financial history;
+unused coupon definitions are removed with the table during an intentional down.
+
+### Merchant recipient overrides (no schema change)
+
+The existing integration_settings.secret_values JSONB also holds encrypted JSON entries keyed
+MERCHANT_RECIPIENT_<merchant_id>, containing promptpayType/promptpayId/bankCode/bankNumber/enabled.
+AES-256-GCM field binding, singleton version locking and atomic audit apply. These entries are not
+returned in generic field reads or reveal APIs. Merchant existence is checked under a row lock;
+no new FK/table/index or backfill is introduced. Total remains 37 application + 2 Knex tables.

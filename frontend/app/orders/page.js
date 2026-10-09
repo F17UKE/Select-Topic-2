@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
+import { customerErrorMessage } from '../../lib/customer-error.mjs';
 import { AppShell, LoadingCards, SignInCard } from '../../components/app-shell';
 import { CustomerDetailHeader } from '../../components/customer/detail-header';
 import { OrderListCard } from '../../components/customer/order-list-card';
@@ -18,7 +19,7 @@ export default function OrdersPage() {
     if (!session.customer) return;
     let active = true;
     api('/api/orders').then((result) => { if (active) setOrders(result.orders); })
-      .catch((requestError) => { if (active) setError(requestError.message); })
+      .catch((requestError) => { if (active) setError(customerErrorMessage(requestError)); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [session.customer]);
